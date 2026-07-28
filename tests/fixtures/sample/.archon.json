@@ -1,0 +1,31 @@
+{
+  "layers": {
+    "mode": "denylist",
+    "layers": {
+      "Web": [
+        "Sample.Web"
+      ],
+      "Infrastructure": [
+        "Sample.Infrastructure"
+      ]
+    },
+    "deny": [
+      {
+        "id": "web-not-to-infrastructure",
+        "from": "Web",
+        "to": "Infrastructure"
+      }
+    ]
+  },
+  "options": {
+    "SQ0010": {
+      "policy": "required"
+    },
+    "SQ0011": {
+      "pattern": "^#tmp[A-Z]"
+    },
+    "SQ0012": {
+      "pattern": "^usp_"
+    }
+  }
+}

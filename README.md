@@ -1,0 +1,288 @@
+# Archon
+
+Architecture, service-lifetime and T-SQL rules for C# and SQL codebases, plus three editor
+surfaces that answer questions a rule cannot. One analysis engine, three ways to reach it: an
+editor extension, a command line for continuous integration, and a long-lived host process that
+both of those drive.
+
+Analysis is syntax-only. No project is loaded, no build is required and no target framework has
+to be installed, so a codebase that does not currently compile is still fully analysable.
+
+## Why it is shaped this way
+
+A rule is only worth writing if someone leaves it switched on. Three things decide that, and all
+three are properties of the system rather than of any individual rule:
+
+- **One process, one parse.** Every rule shares a single parse of each file, held warm between
+  requests. Adding the fortieth rule costs almost nothing, so rules can be added freely.
+- **One place to configure, suppress and accept.** A rule id means the same thing in the editor,
+  on the command line and in a suppression comment. Rules contain detection logic only: they never
+  read settings, never look for an ignore comment and never choose a severity.
+- **A baseline.** Existing findings can be accepted in one step, after which only new ones fail a
+  check. A rule can be adopted on a large codebase on the day it is written, instead of producing
+  thousands of results and being turned off.
+
+## Layout
+
+| Path | What it is |
+|---|---|
+| `src/Archon.Core` | The engine: source cache, rule contracts, configuration, suppressions, baseline, output writers, call graph |
+| `src/Archon.Rules` | The built-in rule pack |
+| `src/Archon.Cli` | `archon` — the command line |
+| `src/Archon.Host` | `archon-host` — the long-lived process the editor drives |
+| `tests/Archon.Tests` | Behaviour assertions over the engine and every rule |
+| `vscode/archon-vscode` | The editor extension, bundling its own copy of the host |
+
+## Getting started
+
+Requires the .NET 10 SDK. Node.js is needed only to build the extension.
+
+```
+dotnet build Archon.slnx
+dotnet tests/Archon.Tests/bin/Debug/net10.0/archon-tests.dll
+dotnet src/Archon.Cli/bin/Debug/net10.0/archon.dll check tests/fixtures/sample
+```
+
+The extension's own parsers are tested separately, without VS Code, by `npm test` in
+`vscode/archon-vscode`.
+
+Copy `.archon.example.json` to `.archon.json` at the root of the repository you want to analyse
+and edit it. Without a configuration file everything runs at its default severity, except the
+layering rule, which stays silent until layers are declared.
+
+## The command line
+
+```
+archon check [path]        Analyse a folder or file and report findings.
+archon rules [path]        List every rule and its effective severity.
+archon baseline [path]     Accept current findings, so only new ones fail.
+archon explain <ruleId>    Describe one rule.
+```
+
+`check` takes `--format console|json|sarif`, `--fail-on error|warning|information|hint|never`,
+`--no-baseline` and `--output <file>`.
+
+Exit codes are `0` when nothing reached the `--fail-on` level, `1` when something did, and `2`
+when the command could not run. A pipeline step is usually:
+
+```
+archon check . --format sarif --output archon.sarif --fail-on error
+```
+
+## The editor extension
+
+```
+cd vscode/archon-vscode
+npm install
+npm run publish-host
+npm run compile
+npx @vscode/vsce package
+code --install-extension archon-analysis-0.1.0.vsix
+```
+
+The packaged `.vsix` carries its own published host, so installing it needs only the .NET runtime.
+
+Findings appear in the Problems panel like any other linter. **Archon Rules** in the Explorer
+lists every rule grouped by category with its severity and current finding count; each row can be
+switched off, given a different severity, or described. Changes made there apply for the session,
+and the log records the configuration entry that would make one permanent.
+
+Saving a `.cs` or `.sql` file re-analyses that file with the rules a single file can decide.
+Rules needing the whole workspace run on **Archon: Analyse Whole Workspace**. Set
+`archon.analyseOn` to `type` to analyse while typing, or `manual` for nothing automatic.
+
+## Beyond rules
+
+Three questions come up constantly while changing code, and none of them has a yes-or-no answer, so
+none of them belongs to a rule. They are reported where the question is asked instead of in the
+Problems panel.
+
+**How far does this reach?** Above each C# method, how many callers it has, how many projects those
+sit in, and how many tests reach it. Selecting the line lists the call sites and navigates to one.
+
+Calls are matched on name and argument count, because there is no compilation to resolve symbols
+against. Overloads sharing a name and argument count are counted together, and calls through
+reflection, dynamic dispatch or a container are invisible. Counts are therefore prefixed `~`, and a
+test count cut off by the search depth is prefixed `≥`, so a lower bound is never read as a total.
+
+The graph spans the workspace and is held between requests. A first query pays for parsing; later
+ones do not, and a save re-parses only the file that changed. Against this repository, 578 ms to
+build and 23 ms to query afterwards.
+
+**Why does this line exist?** Hovering shows the commit that last changed it, with its author, age
+and message body, and links the first issue key found. Only the hovered line is blamed, so cost does
+not grow with file size. `archon.history.issueUrl` is a template containing `{key}`, so any tracker
+can be addressed without naming one.
+
+**What did this branch change?** Review mode dims everything a file has in common with the base ref
+and summarises each changed run above itself, with `Alt+Up` and `Alt+Down` to move between them. The
+base ref defaults to the merge base with the upstream branch, so the comparison shows what this
+branch did rather than everything that happened upstream since.
+
+Review mode is a property of the session rather than of one file, so it covers files opened after it
+is entered. While it is on, the status bar also reports how many of the active file's findings fall
+inside the change — which needs the diff and the findings together, and is the one thing none of
+these surfaces could report while they were separate extensions.
+
+A file with no changes is left undimmed rather than dimmed wholesale, because an evenly faded file
+with no explanation reads as a fault rather than as "nothing changed here".
+
+## Configuration
+
+`.archon.json`, found by walking up from the analysed path.
+
+```json
+{
+  "rules": { "AR0001": "error", "AR0005": "off", "sql": "warning" },
+  "exclude": ["**/Generated/**"],
+  "layers": {
+    "mode": "denylist",
+    "layers": { "Domain": ["MyApp.Domain"], "Infrastructure": ["MyApp.Infrastructure"] },
+    "deny": [{ "id": "domain-stays-pure", "from": "Domain", "to": "Infrastructure" }]
+  },
+  "rulePacks": [],
+  "baseline": ".archon-baseline.json"
+}
+```
+
+A key in `rules` is either a rule id or a category name, so a whole family can be set at once; an
+explicit id always wins over its category. Severities are `error`, `warning`, `information`,
+`hint` and `off`.
+
+## Suppressing a finding
+
+One syntax, honoured by every rule because the engine applies it rather than the rule:
+
+```csharp
+services.AddSingleton<ICache, Cache>();  // archon-ignore[AR0002] single-threaded startup only
+```
+
+The marker applies to its own line and the line below it, so it can sit above the code it
+concerns. Listing several ids suppresses each; naming none suppresses every rule on that line.
+`// archon-ignore-file[AR0002]` covers a whole file.
+
+## Baselines
+
+```
+archon baseline .
+```
+
+Records every current finding in `.archon-baseline.json`. Those findings are still reported and
+counted separately, but no longer fail a check — only new ones do. Entries are matched on a
+fingerprint that excludes line numbers, so editing elsewhere in a file does not resurrect an
+accepted finding as a new one.
+
+## Rules
+
+| Id | Severity | Scope | Category | What it flags |
+|---|---|---|---|---|
+| `AR0001` | warning | file | architecture | A layer references another layer the rules forbid |
+| `AR0002` | error | workspace | lifetime | A singleton holds a scoped service |
+| `AR0003` | warning | workspace | lifetime | A singleton holds a transient service |
+| `AR0004` | information | workspace | lifetime | A scoped service holds a transient service |
+| `AR0005` | off | workspace | lifetime | A dependency has no visible registration |
+| `AR0010` | warning | file | async | A task is blocked on rather than awaited |
+| `AR0011` | warning | file | async | A task-returning call is discarded |
+| `AR0012` | warning | file | async | An `async void` method that is not an event handler |
+| `AR0013` | warning | file | async | An empty catch block |
+| `AR0020` | information | file | performance | A sequence is counted to test whether it is empty |
+| `AR0021` | information | file | performance | String concatenation inside a loop |
+| `AR0022` | hint | file | performance | A sequence is copied then transformed again |
+| `AR0023` | information | file | performance | Inline SQL selects all columns |
+| `AR0030` | warning | project | configuration | A configuration key is in no settings file |
+| `AR0031` | information | project | configuration | A settings file could not be read |
+| `AR0040` | error | workspace | architecture | A project reference cycle |
+| `AR0041` | information | workspace | architecture | A project file could not be read |
+| `SQ0001` | warning | file | sql | A statement selects all columns |
+| `SQ0002` | information | file | sql | A file could not be parsed as T-SQL |
+| `SQ0010` | warning | file | sql | A table reference breaks the hint policy |
+| `SQ0011` | warning | file | sql | A temporary table breaks the naming pattern |
+| `SQ0012` | warning | file | sql | A stored procedure breaks the naming pattern |
+
+`Scope` is what a rule needs in order to decide, and therefore when it runs. A `file` rule runs on
+every save; a `project` rule also runs on save, over the project that owns the saved file; a
+`workspace` rule runs on a full pass.
+
+`SQ0010`, `SQ0011` and `SQ0012` enforce team convention rather than universal truth, so each stays
+silent until configured:
+
+```json
+{
+  "options": {
+    "SQ0010": { "policy": "required" },
+    "SQ0011": { "pattern": "^#tmp[A-Z]" },
+    "SQ0012": { "pattern": "^usp_" }
+  }
+}
+```
+
+`policy` is `required`, `forbidden` or `none`. A pattern that does not compile is ignored rather
+than failing the pass. `AR0030` accepts `{ "additionalSettingsFiles": ["config/shared.json"] }` for
+settings that do not sit beside the project.
+
+### What syntax-only analysis cannot do
+
+Type and namespace resolution is by text as written, not by resolved symbol. Two distinct types
+sharing a simple name across namespaces can be conflated, alias `using` directives are skipped,
+global usings declared elsewhere are invisible, and registrations built dynamically are not seen.
+
+Rules are written to be silent rather than speculative where this matters:
+
+- The lifetime rules only report when both lifetimes are visible in a literal registration.
+- A file whose namespace matches no declared layer is never flagged.
+- `AR0021` only reports an identifier explicitly declared `string`, never one declared `var`.
+- `AR0020` distinguishes the invocation `Count()` from the property `Count` by node shape, so a
+  collection that already knows its size is not reported.
+- `AR0023` decides by parsing the literal as T-SQL, so prose containing the same words is silent.
+- `AR0010` and `AR0011` decide that an expression is task-typed from three syntactic signals: a
+  call named for an asynchronous operation, an identifier named after a task, or being inside an
+  `async` method. A member called `Result` on something matching none of these is left alone, and a
+  task-returning method not named for an asynchronous operation is not seen.
+- `AR0030` words every finding as a possibility, because a key can legitimately come from an
+  environment variable or a secret store.
+
+## Adding a rule
+
+Implement `IRule`, declare one `RuleDescriptor` per separately reportable condition, and add it to
+`BuiltInRulePack`. The engine handles parsing, parallelism, severity, suppression, baselines and
+every output format.
+
+A rule that detects several materially different problems should declare a descriptor for each, so
+they can be configured and switched off independently rather than sharing one severity.
+
+Rules must be stateless and safe to call concurrently, and must only report ids they declared.
+
+### Rules outside this repository
+
+`rulePacks` names assemblies to load, each exposing one or more `IRulePack` implementations. A
+private or organisation-specific rule set therefore lives outside this repository and needs no
+change to it. A pack that fails to load is reported and skipped rather than stopping analysis.
+
+## The host protocol
+
+`archon-host` reads one JSON object per line on standard input and writes one per line on standard
+output, which makes it drivable by hand while diagnosing it:
+
+```
+{"id":1,"method":"initialize","params":{"root":"C:\\src\\app"}}
+{"id":2,"method":"analyzeFile","params":{"path":"C:\\src\\app\\Program.cs"}}
+{"id":3,"method":"shutdown"}
+```
+
+Methods are `initialize`, `listRules`, `analyzeFile` (optionally with in-memory `text`),
+`analyzeWorkspace`, `methodImpact`, `setSeverity`, `invalidate`, `reloadConfig`, `writeBaseline` and
+`shutdown`. Replies are `{"id":n,"ok":true,"result":{...}}` or `{"id":n,"ok":false,"error":"..."}`.
+
+Git is not part of this protocol. Blame and diff are read by the extension directly, because they
+need no parse, no configuration and no warm state — putting them here would only add a hop.
+
+Requests are handled one at a time in arrival order and every request gets a reply. A client that
+does not want to queue work it no longer needs waits for the previous reply before sending the
+next request.
+
+## Explanations
+
+`IFindingExplainer` is an optional seam for prose about a finding that has already been detected.
+The default implementation explains nothing and requires no configuration. Detection never
+consults it, so results stay reproducible and identical offline; an explainer only ever adds
+commentary to a finding produced without it.

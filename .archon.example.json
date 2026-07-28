@@ -1,0 +1,56 @@
+{
+  "rules": {
+    "AR0001": "error",
+    "AR0005": "off",
+    "AR0022": "off",
+    "performance": "information"
+  },
+  "exclude": [
+    "**/Generated/**",
+    "**/*.Designer.cs"
+  ],
+  "layers": {
+    "mode": "denylist",
+    "layers": {
+      "Api": [
+        "MyApp.Api"
+      ],
+      "Domain": [
+        "MyApp.Domain"
+      ],
+      "Infrastructure": [
+        "MyApp.Infrastructure"
+      ]
+    },
+    "deny": [
+      {
+        "id": "domain-stays-pure",
+        "from": "Domain",
+        "to": "Infrastructure"
+      },
+      {
+        "id": "domain-knows-no-api",
+        "from": "Domain",
+        "to": "Api"
+      }
+    ]
+  },
+  "rulePacks": [],
+  "baseline": ".archon-baseline.json",
+  "options": {
+    "SQ0010": {
+      "policy": "required"
+    },
+    "SQ0011": {
+      "pattern": "^#tmp[A-Z]"
+    },
+    "SQ0012": {
+      "pattern": "^usp_"
+    },
+    "AR0030": {
+      "additionalSettingsFiles": [
+        "config/shared.settings.json"
+      ]
+    }
+  }
+}

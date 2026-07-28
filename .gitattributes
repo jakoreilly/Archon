@@ -1,0 +1,17 @@
+# Normalise line endings in the repository so a checkout on another platform
+# does not show every line as changed.
+* text=auto
+
+*.cs text diff=csharp
+*.csproj text
+*.slnx text
+*.ts text
+*.js text
+*.json text
+*.sql text
+*.md text
+
+*.png binary
+*.vsix binary
+*.dll binary
+*.exe binary

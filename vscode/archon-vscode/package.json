@@ -1,0 +1,269 @@
+{
+  "name": "archon-analysis",
+  "displayName": "Archon",
+  "description": "Architecture, lifetime and SQL rules for C# and T-SQL, from one analysis process.",
+  "version": "0.1.0",
+  "publisher": "jakoreilly",
+  "license": "MIT",
+  "icon": "icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jakoreilly/Archon.git",
+    "directory": "vscode/archon-vscode"
+  },
+  "bugs": {
+    "url": "https://github.com/jakoreilly/Archon/issues"
+  },
+  "homepage": "https://github.com/jakoreilly/Archon",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Linters",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "csharp",
+    "sql",
+    "static analysis",
+    "architecture",
+    "code review"
+  ],
+  "galleryBanner": {
+    "color": "#151A2D",
+    "theme": "dark"
+  },
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "archon.analyzeWorkspace",
+        "title": "Archon: Analyse Whole Workspace",
+        "icon": "$(search)"
+      },
+      {
+        "command": "archon.analyzeActiveFile",
+        "title": "Archon: Analyse Active File"
+      },
+      {
+        "command": "archon.writeBaseline",
+        "title": "Archon: Accept Current Findings As Baseline"
+      },
+      {
+        "command": "archon.reload",
+        "title": "Archon: Reload Configuration And Rules",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "archon.showOutput",
+        "title": "Archon: Show Log"
+      },
+      {
+        "command": "archon.enableRule",
+        "title": "Archon: Enable Rule",
+        "icon": "$(circle-large-outline)"
+      },
+      {
+        "command": "archon.disableRule",
+        "title": "Archon: Disable Rule",
+        "icon": "$(circle-slash)"
+      },
+      {
+        "command": "archon.setRuleSeverity",
+        "title": "Archon: Set Rule Severity..."
+      },
+      {
+        "command": "archon.explainRule",
+        "title": "Archon: Describe Rule"
+      },
+      {
+        "command": "archon.toggleReviewMode",
+        "title": "Archon: Review Changes (Dim Everything Unchanged)",
+        "icon": "$(git-compare)"
+      },
+      {
+        "command": "archon.setReviewBaseRef",
+        "title": "Archon: Review Changes Against..."
+      },
+      {
+        "command": "archon.nextChange",
+        "title": "Archon: Next Change"
+      },
+      {
+        "command": "archon.previousChange",
+        "title": "Archon: Previous Change"
+      },
+      {
+        "command": "archon.copyHunkReference",
+        "title": "Archon: Copy Change Reference"
+      },
+      {
+        "command": "archon.showCallers",
+        "title": "Archon: Show Callers"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "archon.nextChange",
+        "key": "alt+down",
+        "when": "editorTextFocus && archon.focusActive"
+      },
+      {
+        "command": "archon.previousChange",
+        "key": "alt+up",
+        "when": "editorTextFocus && archon.focusActive"
+      }
+    ],
+    "views": {
+      "explorer": [
+        {
+          "id": "archon.rules",
+          "name": "Archon Rules"
+        }
+      ]
+    },
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "archon.copyHunkReference",
+          "when": "false"
+        },
+        {
+          "command": "archon.showCallers",
+          "when": "false"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "archon.analyzeWorkspace",
+          "when": "view == archon.rules",
+          "group": "navigation@1"
+        },
+        {
+          "command": "archon.toggleReviewMode",
+          "when": "view == archon.rules",
+          "group": "navigation@3"
+        },
+        {
+          "command": "archon.reload",
+          "when": "view == archon.rules",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "archon.disableRule",
+          "when": "view == archon.rules && viewItem == archon.rule.enabled",
+          "group": "inline@1"
+        },
+        {
+          "command": "archon.enableRule",
+          "when": "view == archon.rules && viewItem == archon.rule.disabled",
+          "group": "inline@1"
+        },
+        {
+          "command": "archon.setRuleSeverity",
+          "when": "view == archon.rules && viewItem =~ /^archon.rule/",
+          "group": "1_config@1"
+        },
+        {
+          "command": "archon.explainRule",
+          "when": "view == archon.rules && viewItem =~ /^archon.rule/",
+          "group": "1_config@2"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Archon",
+      "properties": {
+        "archon.hostPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to archon-host.dll. Leave empty to use the copy bundled with the extension."
+        },
+        "archon.analyseOn": {
+          "type": "string",
+          "enum": [
+            "save",
+            "type",
+            "manual"
+          ],
+          "default": "save",
+          "description": "When to analyse the active file. 'type' re-analyses after a pause in typing."
+        },
+        "archon.debounceMilliseconds": {
+          "type": "number",
+          "default": 400,
+          "minimum": 100,
+          "description": "How long to wait after the last keystroke before analysing, when analyseOn is 'type'."
+        },
+        "archon.analyseWorkspaceOnStartup": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run a full workspace pass when the extension starts. Off by default because a large workspace takes noticeably longer than a single file."
+        },
+        "archon.impact.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show how many callers and covering tests each C# method has, above the method."
+        },
+        "archon.impact.minimumReferences": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0,
+          "description": "Hide the impact line for methods with fewer callers than this. 0 shows it on every method, including those with no callers found."
+        },
+        "archon.impact.maxDepth": {
+          "type": "number",
+          "default": 6,
+          "minimum": 1,
+          "description": "How many calls to follow outwards when looking for covering tests. A count cut off by this limit is shown as a lower bound."
+        },
+        "archon.history.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "On hover, show the commit that last changed the line."
+        },
+        "archon.history.issuePattern": {
+          "type": "string",
+          "default": "[A-Z][A-Z0-9]+-\\d+",
+          "description": "Pattern matching an issue key in a commit message. The first match is linked."
+        },
+        "archon.history.issueUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Link template for an issue key, with {key} where the key goes. Empty shows the key without a link."
+        },
+        "archon.focus.dimOpacity": {
+          "type": "number",
+          "default": 0.4,
+          "minimum": 0.05,
+          "maximum": 1,
+          "description": "How faint unchanged lines appear in review mode."
+        },
+        "archon.focus.debounceMilliseconds": {
+          "type": "number",
+          "default": 400,
+          "minimum": 100,
+          "description": "How long to wait after the last keystroke before recomputing the diff in review mode."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "icon": "node ./tools/make-icon.js",
+    "test": "tsc -p ./ && node ./dist/test/runParserTests.js",
+    "watch": "tsc -watch -p ./",
+    "publish-host": "dotnet publish ../../src/Archon.Host/Archon.Host.csproj -c Release -p:SatelliteResourceLanguages=en -o ./host",
+    "vscode:prepublish": "npm run publish-host && npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}

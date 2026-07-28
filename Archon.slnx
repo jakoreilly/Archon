@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Archon.Cli/Archon.Cli.csproj" />
+    <Project Path="src/Archon.Core/Archon.Core.csproj" />
+    <Project Path="src/Archon.Host/Archon.Host.csproj" />
+    <Project Path="src/Archon.Rules/Archon.Rules.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Archon.Tests/Archon.Tests.csproj" />
+  </Folder>
+</Solution>
