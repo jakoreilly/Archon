@@ -77,7 +77,7 @@ npm install
 npm run publish-host
 npm run compile
 npx @vscode/vsce package
-code --install-extension archon-analysis-0.1.0.vsix
+code --install-extension archon-analysis-0.2.0.vsix
 ```
 
 The packaged `.vsix` carries its own published host, so installing it needs only the .NET runtime.

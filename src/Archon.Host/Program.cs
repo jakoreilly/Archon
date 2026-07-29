@@ -33,7 +33,7 @@ internal static class Program
     {
         if (args.Contains("--version"))
         {
-            Console.WriteLine("archon-host 0.1.0");
+            Console.WriteLine("archon-host 0.2.0");
             return 0;
         }
 
