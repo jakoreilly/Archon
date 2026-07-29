@@ -1,6 +1,6 @@
 {
   "name": "archon-analysis",
-  "displayName": "Archon",
+  "displayName": "Archon for C# and SQL",
   "description": "Architecture, lifetime and SQL rules for C# and T-SQL, from one analysis process.",
   "version": "0.1.0",
   "publisher": "jakoreilly",
