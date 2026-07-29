@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1
+
+- Documents writing your own rules. `rulePacks` was mentioned in passing and nowhere explained, so
+  the first thing anyone extending Archon had to do was read the loader. There is now a worked
+  example under `samples/` in the repository, which builds and runs alongside everything else.
+
+No change to analysis.
+
 ## 0.2.0
 
 Correctness:
