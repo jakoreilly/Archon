@@ -8,11 +8,17 @@ const execFile = promisify(child_process.execFile);
 export class GitError extends Error {
   constructor(
     message: string,
-    public readonly command: string
+    public readonly command: string,
+    /** True when git rejected the revision itself, rather than failing over the file. */
+    public readonly unknownRevision = false,
+    /** True when the output was too large to collect, so the failure says nothing about the file. */
+    public readonly tooLarge = false
   ) {
     super(message);
   }
 }
+
+const UNKNOWN_REVISION = /unknown revision|bad revision|ambiguous argument|not a valid object name|fatal: bad object/i;
 
 const repositoryRoots = new Map<string, string | undefined>();
 
@@ -23,12 +29,21 @@ const repositoryRoots = new Map<string, string | undefined>();
  */
 export async function runGit(cwd: string, args: string[], maxBuffer = 10 * 1024 * 1024): Promise<string> {
   try {
-    const { stdout } = await execFile('git', args, { cwd, maxBuffer });
+    const { stdout } = await execFile('git', args, {
+      cwd,
+      maxBuffer,
+      // Review mode re-runs git as the file is typed into. Optional locks let those reads take the
+      // index lock, where they can collide with whatever the user is doing in a terminal.
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' }
+    });
     return stdout;
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
     throw new GitError(
-      error instanceof Error ? error.message : String(error),
-      `git ${args.join(' ')}`
+      message,
+      `git ${args.join(' ')}`,
+      UNKNOWN_REVISION.test(message),
+      /maxBuffer length exceeded/i.test(message)
     );
   }
 }

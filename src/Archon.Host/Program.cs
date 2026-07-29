@@ -43,9 +43,15 @@ internal static class Program
             _session = AnalysisSession.Create(initialRoot);
         }
 
-        Console.OutputEncoding = System.Text.Encoding.UTF8;
+        // Both streams are read and written as UTF-8 explicitly. They carry file content, and the
+        // console's own code page would otherwise decide how a source file's non-ASCII characters
+        // survive the trip — which on Windows means it usually would not.
+        var encoding = new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+        using var input = new StreamReader(Console.OpenStandardInput(), encoding);
+        using var output = new StreamWriter(Console.OpenStandardOutput(), encoding) { AutoFlush = false };
+        Console.SetOut(output);
 
-        while (Console.ReadLine() is { } line)
+        while (input.ReadLine() is { } line)
         {
             if (string.IsNullOrWhiteSpace(line))
             {
@@ -86,7 +92,7 @@ internal static class Program
         "analyzeWorkspace" => AnalyzeWorkspace(),
         "methodImpact" => MethodImpact(parameters),
         "setSeverity" => SetSeverity(Required(parameters, "ruleId"), Required(parameters, "severity")),
-        "invalidate" => Invalidate(Required(parameters, "path")),
+        "invalidate" => Invalidate(parameters),
         "reloadConfig" => ReloadConfig(),
         "writeBaseline" => WriteBaseline(),
         _ => throw new InvalidOperationException($"unknown method '{method}'")
@@ -153,8 +159,13 @@ internal static class Program
         return Describe(result, path);
     }
 
+    /// <summary>
+    /// Runs every rule over every file. Discovery is refreshed first: this is the pass a user asks
+    /// for by name, so it answers for the tree as it is now rather than as it was last seen.
+    /// </summary>
     private static JsonNode AnalyzeWorkspace()
     {
+        Session.InvalidateWorkspace();
         WorkspaceModel workspace = Session.DiscoverWorkspace();
         AnalysisResult result = Session.Engine.AnalyseWorkspace(workspace, Session.Config, Session.Baseline);
         return Describe(result, null);
@@ -239,10 +250,38 @@ internal static class Program
         };
     }
 
-    private static JsonNode Invalidate(string path)
+    /// <summary>
+    /// Drops cached content for files changed outside the editor. <c>structural</c> marks a change
+    /// that adds or removes files rather than editing them, which also retires the discovered file
+    /// set. Paths arrive in a batch because the events that cause this — switching branches, or a
+    /// code generator running — touch many files at once.
+    /// </summary>
+    private static JsonNode Invalidate(JsonNode? parameters)
     {
-        Session.Invalidate(Path.GetFullPath(path));
-        return new JsonObject { ["invalidated"] = path, ["cached"] = Session.Sources.Count };
+        var paths = new List<string>();
+        if (parameters?["path"] is JsonNode single)
+        {
+            paths.Add(single.GetValue<string>());
+        }
+        if (parameters?["paths"] is JsonArray many)
+        {
+            paths.AddRange(many.Where(p => p is not null).Select(p => p!.GetValue<string>()));
+        }
+        if (paths.Count == 0)
+        {
+            throw new InvalidOperationException("'path' or 'paths' is required");
+        }
+
+        foreach (string path in paths)
+        {
+            Session.Invalidate(Path.GetFullPath(path));
+        }
+        if (parameters?["structural"]?.GetValue<bool>() == true)
+        {
+            Session.InvalidateWorkspace();
+        }
+
+        return new JsonObject { ["invalidated"] = paths.Count, ["cached"] = Session.Sources.Count };
     }
 
     private static JsonNode ReloadConfig()
@@ -259,6 +298,7 @@ internal static class Program
 
     private static JsonNode WriteBaseline()
     {
+        Session.InvalidateWorkspace();
         WorkspaceModel workspace = Session.DiscoverWorkspace();
         AnalysisResult result = Session.Engine.AnalyseWorkspace(workspace, Session.Config, Baseline.Empty);
         Baseline.Save(Session.BaselinePath, result.Findings, Session.Config.WorkspaceRoot);

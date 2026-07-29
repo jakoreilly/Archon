@@ -22,7 +22,24 @@ let impactLens: ImpactLensProvider;
 let history: HistoryHoverProvider;
 let rules: RuleInfo[] = [];
 let findingsByFile = new Map<string, FindingInfo[]>();
-let debounce: NodeJS.Timeout | undefined;
+
+/**
+ * One pending analysis per file. A single shared timer would let an edit to one file cancel the
+ * analysis of another, so the file edited first would simply never be looked at.
+ */
+const debounces = new Map<string, NodeJS.Timeout>();
+
+/**
+ * Files the previous single-file pass reported on. A project-scope rule reports findings in files
+ * other than the one saved, so when such a finding is fixed the reply simply stops mentioning it:
+ * without remembering what was reported last time, there is nothing to tell the editor to clear.
+ */
+let reportedFiles = new Set<string>();
+
+/** Paths changed on disk, collected so that a branch switch sends one message rather than thousands. */
+const pendingInvalidations = new Set<string>();
+let pendingStructural = false;
+let invalidationTimer: NodeJS.Timeout | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   output = vscode.window.createOutputChannel('Archon');
@@ -86,6 +103,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       findingsByFile.delete(document.uri.fsPath);
       history.forget(document.uri);
       focus.forget(document.uri);
+      impactLens.forget(document.uri);
+      const pending = debounces.get(document.uri.toString());
+      if (pending) {
+        clearTimeout(pending);
+        debounces.delete(document.uri.toString());
+      }
     }),
     vscode.window.onDidChangeVisibleTextEditors((editors) => {
       for (const editor of editors) {
@@ -103,14 +126,54 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     })
   );
 
+  context.subscriptions.push(...watchSourceFiles());
+
   await startHost(context);
 }
 
-export function deactivate(): void {
-  client?.dispose();
+/**
+ * Watches for source files changing on disk rather than in the editor. Without this the host holds
+ * whatever it read first for as long as it runs, so after switching branches every finding and
+ * every caller count still describes the tree that was there before.
+ */
+function watchSourceFiles(): vscode.Disposable[] {
+  const watcher = vscode.workspace.createFileSystemWatcher('**/*.{cs,sql}');
+  return [
+    watcher,
+    watcher.onDidChange((uri) => noteFileChanged(uri, false)),
+    watcher.onDidCreate((uri) => noteFileChanged(uri, true)),
+    watcher.onDidDelete((uri) => noteFileChanged(uri, true)),
+    // A project appearing or disappearing changes which files belong to which project, which the
+    // lifetime and layering rules read.
+    ...watchProjects()
+  ];
+}
+
+function watchProjects(): vscode.Disposable[] {
+  const watcher = vscode.workspace.createFileSystemWatcher('**/*.csproj');
+  const structural = (uri: vscode.Uri) => noteFileChanged(uri, true);
+  return [watcher, watcher.onDidCreate(structural), watcher.onDidDelete(structural)];
+}
+
+/**
+ * Waited on by VS Code, so the analysis process is given the chance to stop before the editor goes.
+ * A process left running holds its own files open, which is enough to make reinstalling the
+ * extension fail.
+ */
+export async function deactivate(): Promise<void> {
+  for (const timer of debounces.values()) {
+    clearTimeout(timer);
+  }
+  debounces.clear();
+  if (invalidationTimer) {
+    clearTimeout(invalidationTimer);
+  }
+
+  const stopping = client?.dispose();
   client = undefined;
-  history.clear();
+  history?.clear();
   forgetRepositoryRoots();
+  await stopping;
 }
 
 async function setReviewBaseRef(): Promise<void> {
@@ -166,10 +229,19 @@ function resolveHostPath(context: vscode.ExtensionContext): string {
 }
 
 async function startHost(context: vscode.ExtensionContext): Promise<void> {
-  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  const root = folders[0]?.uri.fsPath;
   if (!root) {
     setStatus('$(circle-slash) Archon: no folder open');
     return;
+  }
+  if (folders.length > 1) {
+    // One host serves one root. Saying so is better than silently analysing a third of a
+    // multi-root workspace and leaving the other folders looking clean.
+    log(
+      `this workspace has ${folders.length} folders and Archon analyses the first only: ${root}. ` +
+        `Not analysed: ${folders.slice(1).map((f) => f.uri.fsPath).join(', ')}.`
+    );
   }
 
   const hostPath = resolveHostPath(context);
@@ -216,13 +288,48 @@ function onDocumentChanged(document: vscode.TextDocument): void {
   if (analysisTrigger() !== 'type' || !isSupported(document)) {
     return;
   }
-  if (debounce) {
-    clearTimeout(debounce);
+  const key = document.uri.toString();
+  const existing = debounces.get(key);
+  if (existing) {
+    clearTimeout(existing);
   }
-  debounce = setTimeout(
-    () => void analyzeDocument(document),
-    settings.get<number>('debounceMilliseconds', 400)
+  debounces.set(
+    key,
+    setTimeout(() => {
+      debounces.delete(key);
+      void analyzeDocument(document);
+    }, settings.get<number>('debounceMilliseconds', 400))
   );
+}
+
+/**
+ * Tells the host that files changed on disk. Changes are batched: switching branches rewrites
+ * thousands of files at once, and one message covering all of them costs the same as one covering
+ * a single file.
+ */
+function noteFileChanged(uri: vscode.Uri, structural: boolean): void {
+  pendingInvalidations.add(uri.fsPath);
+  pendingStructural = pendingStructural || structural;
+  impactLens.invalidate(uri);
+
+  if (invalidationTimer) {
+    clearTimeout(invalidationTimer);
+  }
+  invalidationTimer = setTimeout(() => {
+    invalidationTimer = undefined;
+    const paths = [...pendingInvalidations];
+    const structuralChange = pendingStructural;
+    pendingInvalidations.clear();
+    pendingStructural = false;
+
+    if (!client?.isRunning || paths.length === 0) {
+      return;
+    }
+    client.invalidate(paths, structuralChange).then(
+      () => log(`re-read ${paths.length} file(s) changed outside the editor.`),
+      (error: unknown) => log(`could not refresh changed files: ${describe(error)}`)
+    );
+  }, 300);
 }
 
 async function analyzeDocument(document: vscode.TextDocument): Promise<void> {
@@ -412,9 +519,21 @@ async function resolveRule(node?: Node): Promise<RuleInfo | undefined> {
  * cleared explicitly and each reported file is then set from the reply.
  */
 function applyForFile(uri: vscode.Uri, reply: AnalysisReply): void {
+  const nowReported = new Set(reply.findings.map((finding) => finding.file));
+
+  // Clear the saved file, and any file the last pass reported on that this one no longer does.
+  // Those are findings that have just been fixed, and nothing else will ever retract them.
   diagnostics.delete(uri);
   findingsByFile.delete(uri.fsPath);
+  for (const file of reportedFiles) {
+    if (!nowReported.has(file)) {
+      diagnostics.delete(vscode.Uri.file(file));
+      findingsByFile.delete(file);
+    }
+  }
+
   applyByFile(reply.findings);
+  reportedFiles = nowReported;
   updateCounts(reply.findings);
   updateReviewStatus();
 }
@@ -423,6 +542,7 @@ function applyForWorkspace(reply: AnalysisReply): void {
   diagnostics.clear();
   findingsByFile = new Map<string, FindingInfo[]>();
   applyByFile(reply.findings);
+  reportedFiles = new Set(reply.findings.map((finding) => finding.file));
   updateCounts(reply.findings);
   updateReviewStatus();
 }

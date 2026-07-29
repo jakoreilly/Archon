@@ -54,13 +54,18 @@ public sealed class WorkspaceModel
         string fullRoot = Path.GetFullPath(root);
         var matcher = new GlobMatcher(excludeGlobs);
         var files = new List<SourceFile>();
+        var projectFiles = new List<string>();
 
         if (Directory.Exists(fullRoot))
         {
+            // Source files and project files are collected in a single walk. Enumerating the tree
+            // twice doubles the cost of discovery, and discovery is on the path of every request
+            // that needs the file set.
             foreach (string path in EnumerateFiles(fullRoot))
             {
+                bool isProject = path.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase);
                 string? language = LanguageOf(path);
-                if (language is null)
+                if (language is null && !isProject)
                 {
                     continue;
                 }
@@ -69,7 +74,14 @@ public sealed class WorkspaceModel
                 {
                     continue;
                 }
-                files.Add(new SourceFile(path, language));
+                if (isProject)
+                {
+                    projectFiles.Add(path);
+                }
+                else
+                {
+                    files.Add(new SourceFile(path, language!));
+                }
             }
         }
         else if (File.Exists(fullRoot))
@@ -80,9 +92,12 @@ public sealed class WorkspaceModel
                 files.Add(new SourceFile(fullRoot, language));
             }
             fullRoot = Path.GetDirectoryName(fullRoot) ?? fullRoot;
+            projectFiles.AddRange(EnumerateFiles(fullRoot)
+                .Where(p => p.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
+                .Where(p => !matcher.IsExcluded(Path.GetRelativePath(fullRoot, p).Replace('\\', '/'))));
         }
 
-        var projects = DiscoverProjects(fullRoot, files, matcher);
+        var projects = BuildProjects(projectFiles, files);
         return new WorkspaceModel(fullRoot, files, projects);
     }
 
@@ -151,33 +166,68 @@ public sealed class WorkspaceModel
         return Directory.EnumerateFiles(root, "*", options);
     }
 
-    private static List<ProjectModel> DiscoverProjects(string root, IReadOnlyList<SourceFile> files, GlobMatcher matcher)
+    /// <summary>
+    /// Attributes files to the projects that contain them. A file under nested projects belongs to
+    /// every project above it, as it did when each project scanned the whole file list for itself.
+    ///
+    /// The walk is upwards from each file rather than downwards from each project, and the answer
+    /// is memoised per directory, so the cost is the number of files rather than the number of
+    /// files multiplied by the number of projects.
+    /// </summary>
+    private static List<ProjectModel> BuildProjects(IReadOnlyList<string> projectFiles, IReadOnlyList<SourceFile> files)
     {
-        var projects = new List<ProjectModel>();
-        if (!Directory.Exists(root))
+        if (projectFiles.Count == 0)
         {
-            return projects;
+            return new List<ProjectModel>();
         }
 
-        var options = new EnumerationOptions
+        var directories = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
+        var owned = new List<List<SourceFile>>(projectFiles.Count);
+        for (int index = 0; index < projectFiles.Count; index++)
         {
-            RecurseSubdirectories = true,
-            IgnoreInaccessible = true,
-            AttributesToSkip = FileAttributes.ReparsePoint
-        };
-
-        foreach (string projectFile in Directory.EnumerateFiles(root, "*.csproj", options))
-        {
-            string relative = Path.GetRelativePath(root, projectFile).Replace('\\', '/');
-            if (matcher.IsExcluded(relative))
+            string directory = Path.GetDirectoryName(projectFiles[index]) ?? projectFiles[index];
+            if (!directories.TryGetValue(directory, out List<int>? sharing))
             {
-                continue;
+                sharing = new List<int>();
+                directories[directory] = sharing;
             }
-            string directory = Path.GetDirectoryName(projectFile) ?? root;
-            var owned = files
-                .Where(f => f.Path.StartsWith(directory + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-            projects.Add(new ProjectModel(projectFile, directory, owned));
+            sharing.Add(index);
+            owned.Add(new List<SourceFile>());
+        }
+
+        var ownersByDirectory = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
+        foreach (SourceFile file in files)
+        {
+            string directory = Path.GetDirectoryName(file.Path) ?? file.Path;
+            if (!ownersByDirectory.TryGetValue(directory, out List<int>? owners))
+            {
+                owners = new List<int>();
+                // A file sits inside a project when that project's directory is an ancestor of its
+                // own, so walking up collects every owner without comparing against each project.
+                for (string? current = Path.GetDirectoryName(directory + Path.DirectorySeparatorChar);
+                     current is not null;
+                     current = Path.GetDirectoryName(current))
+                {
+                    if (directories.TryGetValue(current, out List<int>? sharing))
+                    {
+                        owners.AddRange(sharing);
+                    }
+                }
+                ownersByDirectory[directory] = owners;
+            }
+            foreach (int index in owners)
+            {
+                owned[index].Add(file);
+            }
+        }
+
+        var projects = new List<ProjectModel>(projectFiles.Count);
+        for (int index = 0; index < projectFiles.Count; index++)
+        {
+            projects.Add(new ProjectModel(
+                projectFiles[index],
+                Path.GetDirectoryName(projectFiles[index]) ?? projectFiles[index],
+                owned[index]));
         }
         return projects;
     }

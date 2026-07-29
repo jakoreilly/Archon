@@ -172,7 +172,8 @@ public sealed class AnalysisEngine
                     .ThenBy(f => f.Span.StartLine)
                     .ThenBy(f => f.RuleId, StringComparer.Ordinal)
                     .ThenBy(f => f.Message, StringComparer.Ordinal),
-            config.WorkspaceRoot);
+            config.WorkspaceRoot,
+            _sources.GetText);
 
         var reportable = new List<Finding>();
         var baselined = new List<Finding>();

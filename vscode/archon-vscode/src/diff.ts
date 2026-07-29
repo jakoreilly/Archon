@@ -1,4 +1,4 @@
-import { runGit } from './git';
+import { GitError, runGit } from './git';
 
 /** A contiguous run of changed lines, expressed in the current version of the file. */
 export interface DiffHunk {
@@ -105,7 +105,7 @@ async function guessDefaultBranch(repositoryRoot: string): Promise<string | unde
 }
 
 /** The reason a file has no diff to show, distinguished so each can be reported in its own words. */
-export type NoDiffReason = 'binary' | 'untracked' | 'unchanged';
+export type NoDiffReason = 'binary' | 'untracked' | 'unchanged' | 'too-large' | 'bad-ref';
 
 export interface DiffResult {
   hunks: DiffHunk[];
@@ -116,12 +116,22 @@ export interface DiffResult {
  * Retrieves the hunks for one file against a base ref. A file git cannot diff is reported through
  * `reason` rather than by throwing, since none of those cases is an error: a new file, a binary file
  * and an unchanged file are all ordinary states.
+ *
+ * The failures are told apart rather than all being read as "untracked". A mistyped ref would
+ * otherwise show every file in the repository as new, blaming the files for a fault in the
+ * comparison, and an oversized diff would do the same.
  */
 export async function fileDiff(repositoryRoot: string, filePath: string, baseRef: string): Promise<DiffResult> {
   let output: string;
   try {
     output = await runGit(repositoryRoot, ['diff', '--unified=0', '--find-renames', baseRef, '--', filePath]);
-  } catch {
+  } catch (error) {
+    if (error instanceof GitError && error.unknownRevision) {
+      return { hunks: [], reason: 'bad-ref' };
+    }
+    if (error instanceof GitError && error.tooLarge) {
+      return { hunks: [], reason: 'too-large' };
+    }
     return { hunks: [], reason: 'untracked' };
   }
 

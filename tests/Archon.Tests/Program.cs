@@ -30,8 +30,12 @@ internal static class Program
         ConfigKeyRules(harness);
         ProjectCycleRules(harness);
         CallGraphChecks(harness);
+        CallGraphMemberChecks(harness);
         SuppressionRules(harness);
         BaselineRules(harness);
+        BaselineStabilityRules(harness);
+        SourceCacheRules(harness);
+        ProjectAttributionRules(harness);
         ConfigurationRules(harness);
         ScopeRules(harness);
         RegistryRules(harness);
@@ -550,6 +554,193 @@ internal static class Program
 
         harness.Equal("reports nothing for a file it has never seen", 0,
             graph.Impact(shrunk, Path.Combine(root, "App", "Absent.cs"), maxDepth: 6, maxCallers: 50).Methods.Count);
+
+        Directory.Delete(root, recursive: true);
+    }
+
+    /// <summary>
+    /// Members other than plain methods hold calls too. A codebase that injects its dependencies
+    /// makes most of its calls from constructors, so counting only method bodies reports nothing
+    /// for methods that are in constant use.
+    /// </summary>
+    private static void CallGraphMemberChecks(Harness harness)
+    {
+        harness.Group("Method impact across member kinds");
+
+        string root = Path.Combine(Path.GetTempPath(), "archon-callgraph-members");
+        if (Directory.Exists(root))
+        {
+            Directory.Delete(root, recursive: true);
+        }
+        Directory.CreateDirectory(root);
+        File.WriteAllText(Path.Combine(root, "App.csproj"), "<Project Sdk=\"Microsoft.NET.Sdk\" />");
+
+        string target = Path.Combine(root, "Service.cs");
+        File.WriteAllText(target, """
+            namespace App
+            {
+                class Service
+                {
+                    public Service() { Configure(); }
+                    public void Configure() { }
+                    public void FromProperty() { }
+                    public void FromLocal() { }
+                    public void FromIndexer() { }
+                    public int Value { get { FromProperty(); return 1; } }
+                    public int Auto { get; set; }
+                    public string this[int i] { get { FromIndexer(); return ""; } }
+                    public void Outer() { void Inner() { FromLocal(); } Inner(); }
+                }
+            }
+            """);
+
+        File.WriteAllText(Path.Combine(root, "Uses.cs"), """
+            namespace App
+            {
+                class Uses
+                {
+                    public void Build() { var s = new Service(); }
+                }
+            }
+            """);
+
+        var sources = new SourceCache();
+        var graph = new CallGraph(sources);
+        WorkspaceModel workspace = WorkspaceModel.Discover(root, ArchonConfig.DefaultExcludes);
+        ImpactResult result = graph.Impact(workspace, target, maxDepth: 6, maxCallers: 50);
+
+        int Count(string name) =>
+            result.Methods.FirstOrDefault(m => m.MethodName == name)?.ReferenceCount ?? -1;
+
+        harness.Equal("counts a call made from a constructor", 1, Count("Configure"));
+        harness.Equal("counts a call made from a property accessor", 1, Count("FromProperty"));
+        harness.Equal("counts a call made from a local function", 1, Count("FromLocal"));
+        harness.Equal("counts a call made from an indexer", 1, Count("FromIndexer"));
+        harness.Equal("treats object creation as reaching the constructor", 1, Count("Service"));
+        harness.Check("indexes a local function in its own right",
+            result.Methods.Any(m => m.MethodName == "Inner"));
+        harness.Check("does not index an auto-property, which holds no calls",
+            result.Methods.All(m => m.MethodName != "Auto"));
+        harness.Check("indexes a property with a body exactly once",
+            result.Methods.Count(m => m.MethodName == "Value") == 1);
+
+        Directory.Delete(root, recursive: true);
+    }
+
+    /// <summary>
+    /// A baseline is only useful if fixing one finding leaves the others accepted. Numbering
+    /// duplicates by position alone breaks that: removing the first renumbers the rest, so a
+    /// developer is failed by a check for findings they never touched.
+    /// </summary>
+    private static void BaselineStabilityRules(Harness harness)
+    {
+        harness.Group("Baseline stability");
+
+        var workspace = new TestWorkspace();
+        workspace.Add("a.sql", "SELECT * FROM dbo.First;\nSELECT * FROM dbo.Second;\nSELECT * FROM dbo.Third;");
+        AnalysisResult all = workspace.Analyse();
+        harness.Equal("reports each of three findings", 3, all.Findings.Count);
+
+        var baseline = new Baseline(all.Findings.Select(f => new BaselineEntry { Fingerprint = f.Fingerprint }));
+
+        var fixedFirst = new TestWorkspace();
+        fixedFirst.Add("a.sql", "SELECT Id FROM dbo.First;\nSELECT * FROM dbo.Second;\nSELECT * FROM dbo.Third;");
+        harness.Equal("fixing the first leaves the other two accepted",
+            0, fixedFirst.Analyse(baseline).Findings.Count);
+
+        var fixedMiddle = new TestWorkspace();
+        fixedMiddle.Add("a.sql", "SELECT * FROM dbo.First;\nSELECT Id FROM dbo.Second;\nSELECT * FROM dbo.Third;");
+        harness.Equal("fixing the middle leaves the other two accepted",
+            0, fixedMiddle.Analyse(baseline).Findings.Count);
+
+        var reordered = new TestWorkspace();
+        reordered.Add("a.sql", "SELECT * FROM dbo.Third;\nSELECT * FROM dbo.First;\nSELECT * FROM dbo.Second;");
+        harness.Equal("reordering the statements keeps every finding accepted",
+            0, reordered.Analyse(baseline).Findings.Count);
+
+        var added = new TestWorkspace();
+        added.Add("a.sql", "SELECT * FROM dbo.First;\nSELECT * FROM dbo.Second;\nSELECT * FROM dbo.Third;\nSELECT * FROM dbo.Fourth;");
+        harness.Equal("a genuinely new finding is still reported",
+            1, added.Analyse(baseline).Findings.Count);
+    }
+
+    /// <summary>
+    /// The cache is bounded, because a long-lived process holding a syntax tree for every file it
+    /// ever touched is the problem the warm process was meant to avoid. Editor text is exempt:
+    /// evicting it would substitute what is on disk for what the user is looking at.
+    /// </summary>
+    private static void SourceCacheRules(Harness harness)
+    {
+        harness.Group("Source cache");
+
+        string root = Path.Combine(Path.GetTempPath(), "archon-cache-tests");
+        if (Directory.Exists(root))
+        {
+            Directory.Delete(root, recursive: true);
+        }
+        Directory.CreateDirectory(root);
+
+        var cache = new SourceCache(capacity: 16);
+        for (int i = 0; i < 64; i++)
+        {
+            string path = Path.Combine(root, $"F{i}.cs");
+            File.WriteAllText(path, $"class C{i} {{ }}");
+            cache.GetCSharp(path);
+        }
+        harness.Check("stays within its capacity once full", cache.Count <= 16);
+
+        string unsaved = Path.Combine(root, "Unsaved.cs");
+        cache.SetText(unsaved, "class Held { }");
+        for (int i = 0; i < 64; i++)
+        {
+            cache.GetCSharp(Path.Combine(root, $"F{i}.cs"));
+        }
+        harness.Equal("never evicts unsaved editor text", "class Held { }", cache.GetText(unsaved));
+
+        cache.SetText(unsaved, "class Replaced { }");
+        harness.Equal("replaces editor text when it changes", "class Replaced { }", cache.GetText(unsaved));
+
+        string evicted = Path.Combine(root, "F0.cs");
+        File.WriteAllText(evicted, "class Rewritten { }");
+        cache.Invalidate(evicted);
+        harness.Equal("re-reads a file once invalidated", "class Rewritten { }", cache.GetText(evicted));
+
+        Directory.Delete(root, recursive: true);
+    }
+
+    /// <summary>
+    /// Files are attributed to every project above them, so a project nested inside another is
+    /// owned by both. This held when each project scanned the whole file list for itself, and must
+    /// still hold now that files are walked upwards instead.
+    /// </summary>
+    private static void ProjectAttributionRules(Harness harness)
+    {
+        harness.Group("Project attribution");
+
+        string root = Path.Combine(Path.GetTempPath(), "archon-project-tests");
+        if (Directory.Exists(root))
+        {
+            Directory.Delete(root, recursive: true);
+        }
+        Directory.CreateDirectory(Path.Combine(root, "Outer", "Inner", "Deep"));
+        File.WriteAllText(Path.Combine(root, "Outer", "Outer.csproj"), "<Project />");
+        File.WriteAllText(Path.Combine(root, "Outer", "Inner", "Inner.csproj"), "<Project />");
+        File.WriteAllText(Path.Combine(root, "Outer", "Top.cs"), "class Top { }");
+        File.WriteAllText(Path.Combine(root, "Outer", "Inner", "Mid.cs"), "class Mid { }");
+        File.WriteAllText(Path.Combine(root, "Outer", "Inner", "Deep", "Low.cs"), "class Low { }");
+
+        WorkspaceModel workspace = WorkspaceModel.Discover(root, ArchonConfig.DefaultExcludes);
+        ProjectModel? outer = workspace.Projects.FirstOrDefault(p => p.Name == "Outer");
+        ProjectModel? inner = workspace.Projects.FirstOrDefault(p => p.Name == "Inner");
+
+        harness.Equal("finds both projects in one walk", 2, workspace.Projects.Count);
+        harness.Equal("discovers every source file", 3, workspace.Files.Count);
+        harness.Equal("the outer project owns everything beneath it", 3, outer?.Files.Count);
+        harness.Equal("the nested project owns only its own subtree", 2, inner?.Files.Count);
+        harness.Equal("the most specific project wins", "Inner",
+            workspace.ProjectOf(Path.Combine(root, "Outer", "Inner", "Deep", "Low.cs"))?.Name);
+        harness.Equal("a file above the nested project belongs to the outer one", "Outer",
+            workspace.ProjectOf(Path.Combine(root, "Outer", "Top.cs"))?.Name);
 
         Directory.Delete(root, recursive: true);
     }

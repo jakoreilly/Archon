@@ -10,7 +10,13 @@ import { ArchonClient, CallerInfo, MethodImpactInfo } from './client';
  */
 export class ImpactLensProvider implements vscode.CodeLensProvider {
   private readonly changed = new vscode.EventEmitter<void>();
-  private readonly cache = new Map<string, MethodImpactInfo[]>();
+
+  /**
+   * One entry per file, replaced when the file changes. Keying by document version instead would
+   * add an entry per keystroke and never drop the old ones, so a long editing session would hold
+   * every intermediate answer it had ever received.
+   */
+  private readonly cache = new Map<string, { version: number; methods: MethodImpactInfo[] }>();
   private readonly inFlight = new Set<string>();
 
   public readonly onDidChangeCodeLenses = this.changed.event;
@@ -34,18 +40,26 @@ export class ImpactLensProvider implements vscode.CodeLensProvider {
       return [];
     }
 
-    const key = `${document.uri.toString()}@${document.version}`;
+    const key = document.uri.toString();
     const cached = this.cache.get(key);
-    if (!cached) {
+    if (!cached || cached.version !== document.version) {
       void this.load(document, key);
-      return [];
+      return cached ? this.lensesFrom(cached.methods) : [];
     }
+    return this.lensesFrom(cached.methods);
+  }
 
+  /**
+   * Builds lenses from an answer. While a fresh one is being fetched the previous answer is still
+   * shown, because clearing the lenses on every keystroke makes them flicker in and out of the
+   * gutter as the file is typed into.
+   */
+  private lensesFrom(methods: MethodImpactInfo[]): vscode.CodeLens[] {
     const threshold = vscode.workspace
       .getConfiguration('archon')
       .get<number>('impact.minimumReferences', 1);
 
-    return cached
+    return methods
       .filter((method) => method.referenceCount >= threshold)
       .map((method) => {
         const range = new vscode.Range(method.line, method.column, method.line, method.column);
@@ -76,12 +90,24 @@ export class ImpactLensProvider implements vscode.CodeLensProvider {
     return vscode.workspace.getConfiguration('archon').get<boolean>('impact.enabled', true);
   }
 
+  /** Drops one file's answer, for a change that came from outside the editor. */
+  public invalidate(uri: vscode.Uri): void {
+    if (this.cache.delete(uri.toString())) {
+      this.changed.fire();
+    }
+  }
+
+  public forget(uri: vscode.Uri): void {
+    this.cache.delete(uri.toString());
+  }
+
   private async load(document: vscode.TextDocument, key: string): Promise<void> {
     const client = this.client();
     if (!client?.isRunning || this.inFlight.has(key)) {
       return;
     }
     this.inFlight.add(key);
+    const version = document.version;
     try {
       const settings = vscode.workspace.getConfiguration('archon');
       const reply = await client.methodImpact(
@@ -89,10 +115,10 @@ export class ImpactLensProvider implements vscode.CodeLensProvider {
         document.isDirty ? document.getText() : undefined,
         settings.get<number>('impact.maxDepth', 6)
       );
-      this.cache.set(key, reply.methods);
+      this.cache.set(key, { version, methods: reply.methods });
     } catch (error) {
       this.log(`could not measure impact for ${document.uri.fsPath}: ${error instanceof Error ? error.message : String(error)}`);
-      this.cache.set(key, []);
+      this.cache.set(key, { version, methods: [] });
     } finally {
       this.inFlight.delete(key);
       this.changed.fire();

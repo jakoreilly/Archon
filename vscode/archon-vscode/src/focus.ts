@@ -205,6 +205,12 @@ export class FocusMode {
     if (focus.reason === 'untracked') {
       return `not tracked in ${this.shortRef()} — all of it is new`;
     }
+    if (focus.reason === 'bad-ref') {
+      return `cannot resolve ${this.shortRef()} — nothing to compare against`;
+    }
+    if (focus.reason === 'too-large') {
+      return `the diff vs ${this.shortRef()} is too large to read`;
+    }
     if (focus.hunks.length === 0) {
       return `unchanged vs ${this.shortRef()}`;
     }

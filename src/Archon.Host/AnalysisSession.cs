@@ -17,6 +17,7 @@ namespace Archon.Host;
 internal sealed class AnalysisSession
 {
     private readonly List<string> _messages = new();
+    private WorkspaceModel? _workspace;
 
     private AnalysisSession(string root)
     {
@@ -89,7 +90,11 @@ internal sealed class AnalysisSession
         Registry = registry;
         Baseline = baseline;
         Engine = new AnalysisEngine(registry, Sources);
-        CallGraph.Clear();
+
+        // The call graph is derived from file content alone, so a change of severities or of the
+        // baseline cannot invalidate it. Only the file set can, and exclusions are applied when the
+        // workspace is rediscovered, at which point the graph drops whatever left the workspace.
+        InvalidateWorkspace();
     }
 
     /// <summary>
@@ -101,6 +106,13 @@ internal sealed class AnalysisSession
         Sources.Invalidate(path);
         CallGraph.Invalidate(path);
     }
+
+    /// <summary>
+    /// Forgets which files the workspace contains, for a change that adds or removes one rather
+    /// than editing it. Content caches are left alone: a file that is still present has not
+    /// changed just because its neighbour appeared.
+    /// </summary>
+    public void InvalidateWorkspace() => _workspace = null;
 
     /// <summary>Registers unsaved editor text for a file, invalidating what was derived from it.</summary>
     public void SetText(string path, string text)
@@ -116,6 +128,13 @@ internal sealed class AnalysisSession
             ? config.Baseline
             : Path.Combine(config.WorkspaceRoot, config.Baseline);
 
+    /// <summary>
+    /// The files under analysis, discovered once and held until something adds or removes one.
+    ///
+    /// Discovery walks the entire tree, and it sits in front of every request that needs the file
+    /// set — including the impact query the editor issues for each file it shows. Rediscovering on
+    /// each of those made the warm call graph behind it largely beside the point.
+    /// </summary>
     public WorkspaceModel DiscoverWorkspace() =>
-        WorkspaceModel.Discover(Root, Config.EffectiveExcludes());
+        _workspace ??= WorkspaceModel.Discover(Root, Config.EffectiveExcludes());
 }

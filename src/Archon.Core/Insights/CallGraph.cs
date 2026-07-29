@@ -71,6 +71,13 @@ public sealed class CallGraph
     private readonly object _gate = new();
     private Dictionary<string, List<MethodNode>>? _callersByKey;
 
+    /// <summary>
+    /// Covering-test counts already computed against the current edge set. Every method in a file
+    /// walks the same caller graph, and neighbouring methods usually share most of it, so without
+    /// this a file of fifty methods pays for fifty traversals of the whole graph.
+    /// </summary>
+    private readonly Dictionary<(string Key, int Depth), (int Count, bool Bounded)> _coverage = new();
+
     public CallGraph(SourceCache sources) => _sources = sources;
 
     /// <summary>Drops one file's methods, so the next query re-reads and re-indexes only that file.</summary>
@@ -79,7 +86,7 @@ public sealed class CallGraph
         lock (_gate)
         {
             _methodsByFile.Remove(Path.GetFullPath(path));
-            _callersByKey = null;
+            InvalidateEdges();
         }
     }
 
@@ -89,8 +96,14 @@ public sealed class CallGraph
         {
             _methodsByFile.Clear();
             _projectDirectories.Clear();
-            _callersByKey = null;
+            InvalidateEdges();
         }
+    }
+
+    private void InvalidateEdges()
+    {
+        _callersByKey = null;
+        _coverage.Clear();
     }
 
     public ImpactResult Impact(
@@ -121,7 +134,12 @@ public sealed class CallGraph
                     ? found
                     : new List<MethodNode>();
 
-                (int coveringTests, bool bounded) = CountCoveringTests(method, callers, depthLimit);
+                if (!_coverage.TryGetValue((method.Key, depthLimit), out (int Count, bool Bounded) coverage))
+                {
+                    coverage = CountCoveringTests(method, callers, depthLimit);
+                    _coverage[(method.Key, depthLimit)] = coverage;
+                }
+                (int coveringTests, bool bounded) = coverage;
 
                 impacts.Add(new MethodImpact(
                     method.Name,
@@ -155,17 +173,23 @@ public sealed class CallGraph
                 continue;
             }
             _methodsByFile[path] = IndexFile(path);
-            _callersByKey = null;
+            InvalidateEdges();
         }
 
         List<string> stale = _methodsByFile.Keys.Where(k => !present.Contains(k)).ToList();
         foreach (string path in stale)
         {
             _methodsByFile.Remove(path);
-            _callersByKey = null;
+            InvalidateEdges();
         }
     }
 
+    /// <summary>
+    /// Indexes every member that can hold a call, not only ordinary methods. Constructors, property
+    /// and event accessors and local functions all make calls, and a codebase that injects its
+    /// dependencies makes a great many of them from constructors: counting only method bodies
+    /// reports nothing for a method that is in constant use.
+    /// </summary>
     private List<MethodNode> IndexFile(string path)
     {
         var methods = new List<MethodNode>();
@@ -176,28 +200,88 @@ public sealed class CallGraph
         }
 
         string projectDirectory = ProjectDirectoryOf(path);
-        foreach (MethodDeclarationSyntax declaration in parsed.Root.DescendantNodes().OfType<MethodDeclarationSyntax>())
-        {
-            LinePosition position = parsed.Tree.GetLineSpan(declaration.Identifier.Span).StartLinePosition;
-            SyntaxNode? body = declaration.Body ?? (SyntaxNode?)declaration.ExpressionBody?.Expression;
 
+        void Add(SyntaxToken identifier, int arity, SyntaxNode? body, bool isTest)
+        {
+            LinePosition position = parsed.Tree.GetLineSpan(identifier.Span).StartLinePosition;
             methods.Add(new MethodNode(
-                declaration.Identifier.Text,
-                declaration.ParameterList.Parameters.Count,
+                identifier.Text,
+                arity,
                 path,
                 projectDirectory,
                 position.Line,
                 position.Character,
-                IsTestMethod(declaration),
+                isTest,
                 body is null ? Array.Empty<string>() : CalleeKeys(body)));
+        }
+
+        foreach (SyntaxNode node in parsed.Root.DescendantNodes())
+        {
+            switch (node)
+            {
+                case MethodDeclarationSyntax method:
+                    Add(
+                        method.Identifier,
+                        method.ParameterList.Parameters.Count,
+                        method.Body ?? (SyntaxNode?)method.ExpressionBody?.Expression,
+                        IsTestMethod(method.AttributeLists));
+                    break;
+
+                // A constructor is reached by `new T(...)` rather than by an invocation, which
+                // CalleeKeys records under the type name so the two meet on the same key.
+                case ConstructorDeclarationSyntax constructor:
+                    Add(
+                        constructor.Identifier,
+                        constructor.ParameterList.Parameters.Count,
+                        constructor.Body ?? (SyntaxNode?)constructor.ExpressionBody?.Expression,
+                        isTest: false);
+                    break;
+
+                case LocalFunctionStatementSyntax local:
+                    Add(
+                        local.Identifier,
+                        local.ParameterList.Parameters.Count,
+                        local.Body ?? (SyntaxNode?)local.ExpressionBody?.Expression,
+                        isTest: false);
+                    break;
+
+                // A property is indexed once, covering every accessor, because a call site writes
+                // the property name rather than the accessor. Auto-properties are skipped: they
+                // hold no calls, so a node for one would only put an empty lens on every field of
+                // every data carrier.
+                case BasePropertyDeclarationSyntax property when HasBody(property):
+                    SyntaxToken name = property switch
+                    {
+                        PropertyDeclarationSyntax declared => declared.Identifier,
+                        EventDeclarationSyntax declared => declared.Identifier,
+                        IndexerDeclarationSyntax indexer => indexer.ThisKeyword,
+                        _ => default
+                    };
+                    if (name != default)
+                    {
+                        Add(name, 0, property, isTest: false);
+                    }
+                    break;
+            }
         }
         return methods;
     }
 
-    private static bool IsTestMethod(MethodDeclarationSyntax declaration) =>
-        declaration.AttributeLists
+    private static bool IsTestMethod(SyntaxList<AttributeListSyntax> attributeLists) =>
+        attributeLists
             .SelectMany(list => list.Attributes)
             .Any(attribute => TestAttributes.Contains(SimpleAttributeName(attribute.Name.ToString())));
+
+    /// <summary>Whether a property, indexer or event declares any code, as opposed to being generated.</summary>
+    private static bool HasBody(BasePropertyDeclarationSyntax property)
+    {
+        if (property is PropertyDeclarationSyntax { ExpressionBody: not null })
+        {
+            return true;
+        }
+        return property.AccessorList?.Accessors
+            .Any(a => a.Body is not null || a.ExpressionBody is not null) ?? false;
+    }
 
     private static string SimpleAttributeName(string text)
     {
@@ -210,19 +294,45 @@ public sealed class CallGraph
     private static List<string> CalleeKeys(SyntaxNode body)
     {
         var keys = new HashSet<string>(StringComparer.Ordinal);
-        foreach (InvocationExpressionSyntax invocation in body.DescendantNodesAndSelf().OfType<InvocationExpressionSyntax>())
+
+        // A local function is indexed as a member in its own right, so its calls belong to it and
+        // not also to whatever encloses it. Counting them twice would report two callers for a
+        // single call site; the enclosing member still reaches them through the graph.
+        foreach (SyntaxNode node in body.DescendantNodesAndSelf(
+                     n => ReferenceEquals(n, body) || n is not LocalFunctionStatementSyntax))
         {
-            string? name = invocation.Expression switch
+            switch (node)
             {
-                IdentifierNameSyntax identifier => identifier.Identifier.Text,
-                MemberAccessExpressionSyntax member => member.Name.Identifier.Text,
-                MemberBindingExpressionSyntax binding => binding.Name.Identifier.Text,
-                GenericNameSyntax generic => generic.Identifier.Text,
-                _ => null
-            };
-            if (name is not null)
-            {
-                keys.Add($"{name}/{invocation.ArgumentList.Arguments.Count}");
+                case InvocationExpressionSyntax invocation:
+                    string? name = invocation.Expression switch
+                    {
+                        IdentifierNameSyntax identifier => identifier.Identifier.Text,
+                        MemberAccessExpressionSyntax member => member.Name.Identifier.Text,
+                        MemberBindingExpressionSyntax binding => binding.Name.Identifier.Text,
+                        GenericNameSyntax generic => generic.Identifier.Text,
+                        _ => null
+                    };
+                    if (name is not null)
+                    {
+                        keys.Add($"{name}/{invocation.ArgumentList.Arguments.Count}");
+                    }
+                    break;
+
+                // `new T(a, b)` reaches T's constructor, which is indexed under the type name, so
+                // recording it here is what gives a constructor any callers at all.
+                case ObjectCreationExpressionSyntax creation:
+                    string? type = creation.Type switch
+                    {
+                        IdentifierNameSyntax identifier => identifier.Identifier.Text,
+                        GenericNameSyntax generic => generic.Identifier.Text,
+                        QualifiedNameSyntax qualified => qualified.Right.Identifier.Text,
+                        _ => null
+                    };
+                    if (type is not null)
+                    {
+                        keys.Add($"{type}/{creation.ArgumentList?.Arguments.Count ?? 0}");
+                    }
+                    break;
             }
         }
         return keys.ToList();

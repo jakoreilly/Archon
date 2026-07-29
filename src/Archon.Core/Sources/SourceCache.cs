@@ -1,6 +1,4 @@
 using System.Collections.Concurrent;
-using System.Security.Cryptography;
-using System.Text;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.SqlServer.TransactSql.ScriptDom;
@@ -26,15 +24,32 @@ public sealed record ParsedSql(TSqlFragment? Fragment, IReadOnlyList<ParseError>
 /// Parses each file at most once per content revision and hands the result to every rule that
 /// needs it. This is the whole reason many rules cost little more than one: a saved file is
 /// re-read and re-parsed a single time regardless of how many rules consume it.
+///
+/// A syntax tree costs several times what its source does, so the cache is bounded and evicts the
+/// least recently used file once it is full: a long-lived process over a large repository would
+/// otherwise grow until it held every file it had ever touched. Text registered by an editor is
+/// never evicted, because it is the only copy — re-reading that file would silently substitute
+/// what is on disk for what the user is looking at.
 /// </summary>
 public sealed class SourceCache
 {
+    /// <summary>Files held before eviction begins. Roughly 200 MB of trees for average C# files.</summary>
+    public const int DefaultCapacity = 2048;
+
     private readonly ConcurrentDictionary<string, Entry> _entries = new(StringComparer.OrdinalIgnoreCase);
+    private readonly int _capacity;
+    private long _clock;
+
+    public SourceCache(int capacity = DefaultCapacity) => _capacity = Math.Max(16, capacity);
 
     private sealed class Entry
     {
-        public string Hash = "";
         public string Text = "";
+
+        /// <summary>Set for editor-supplied text, which has no copy on disk to fall back to.</summary>
+        public bool Pinned;
+
+        public long LastUsed;
         public ParsedCSharp? CSharp;
         public ParsedSql? Sql;
     }
@@ -53,11 +68,20 @@ public sealed class SourceCache
     /// </summary>
     public void SetText(string path, string text)
     {
-        string hash = Hash(text);
         _entries.AddOrUpdate(
             path,
-            _ => new Entry { Hash = hash, Text = text },
-            (_, existing) => existing.Hash == hash ? existing : new Entry { Hash = hash, Text = text });
+            _ => NewEntry(text, pinned: true),
+            (_, existing) =>
+            {
+                // Comparing the text directly beats hashing it: ordinal equality rejects on length
+                // before it reads a character, and this runs on every keystroke.
+                if (existing.Pinned && string.Equals(existing.Text, text, StringComparison.Ordinal))
+                {
+                    Touch(existing);
+                    return existing;
+                }
+                return NewEntry(text, pinned: true);
+            });
     }
 
     public string? GetText(string path) => Load(path)?.Text;
@@ -100,13 +124,15 @@ public sealed class SourceCache
     {
         if (_entries.TryGetValue(path, out Entry? cached))
         {
+            Touch(cached);
             return cached;
         }
         try
         {
-            string text = File.ReadAllText(path);
-            var entry = new Entry { Hash = Hash(text), Text = text };
-            return _entries.GetOrAdd(path, entry);
+            Entry added = _entries.GetOrAdd(path, NewEntry(File.ReadAllText(path), pinned: false));
+            Touch(added);
+            EvictIfFull();
+            return added;
         }
         catch (IOException)
         {
@@ -118,6 +144,32 @@ public sealed class SourceCache
         }
     }
 
-    private static string Hash(string text) =>
-        Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(text)))[..16];
+    private Entry NewEntry(string text, bool pinned) =>
+        new() { Text = text, Pinned = pinned, LastUsed = Interlocked.Increment(ref _clock) };
+
+    private void Touch(Entry entry) => entry.LastUsed = Interlocked.Increment(ref _clock);
+
+    /// <summary>
+    /// Drops the coldest unpinned files once the cache is over capacity, in one batch so that a
+    /// steady stream of new files does not evict on every single read.
+    /// </summary>
+    private void EvictIfFull()
+    {
+        if (_entries.Count <= _capacity)
+        {
+            return;
+        }
+
+        int target = _capacity * 9 / 10;
+        List<KeyValuePair<string, Entry>> candidates = _entries
+            .Where(pair => !pair.Value.Pinned)
+            .OrderBy(pair => pair.Value.LastUsed)
+            .Take(Math.Max(0, _entries.Count - target))
+            .ToList();
+
+        foreach (KeyValuePair<string, Entry> candidate in candidates)
+        {
+            _entries.TryRemove(candidate);
+        }
+    }
 }
