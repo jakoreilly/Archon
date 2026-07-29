@@ -1,0 +1,16 @@
+{
+  "rulePacks": [
+    "../AcmeRules/bin/Debug/net10.0/AcmeRules.dll"
+  ],
+  "rules": {
+    "ACME0001": "error",
+    "architecture": "warning"
+  },
+  "options": {
+    "ACME0002": {
+      "namespaces": [
+        "System.Data.SqlClient"
+      ]
+    }
+  }
+}

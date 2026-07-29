@@ -8,4 +8,7 @@
   <Folder Name="/tests/">
     <Project Path="tests/Archon.Tests/Archon.Tests.csproj" />
   </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/AcmeRules/AcmeRules.csproj" />
+  </Folder>
 </Solution>

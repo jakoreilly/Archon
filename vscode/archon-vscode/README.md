@@ -102,6 +102,22 @@ Rule severities live in `.archon.json` at the repository root, not in editor set
 editor and any build check agree. Changes made from the rule list apply to the session; the log
 records the configuration entry that would make one permanent.
 
+## Your own rules
+
+`rulePacks` in `.archon.json` names .NET assemblies to load, each exposing an `IRulePack`. A rule
+from one behaves exactly like a built-in: it appears in the rule list, takes a severity by id or by
+category, honours an ignore comment, and goes into the baseline — none of which the rule implements
+itself.
+
+```json
+{ "rulePacks": ["tools/TeamRules/bin/Release/net10.0/TeamRules.dll"] }
+```
+
+A pack that fails to load is reported in the log and skipped, rather than stopping analysis. There
+is a worked example under `samples/` in
+[the repository](https://github.com/jakoreilly/Archon#rules-outside-this-repository), which builds
+and runs alongside everything else.
+
 ## Suppressing a finding
 
 ```csharp

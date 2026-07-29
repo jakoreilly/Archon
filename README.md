@@ -32,6 +32,7 @@ three are properties of the system rather than of any individual rule:
 | `src/Archon.Host` | `archon-host` — the long-lived process the editor drives |
 | `tests/Archon.Tests` | Behaviour assertions over the engine and every rule |
 | `vscode/archon-vscode` | The editor extension, bundling its own copy of the host |
+| `samples/AcmeRules` | A rule pack living outside the engine, and a workspace that loads it |
 
 ## Getting started
 
@@ -257,6 +258,48 @@ Rules must be stateless and safe to call concurrently, and must only report ids 
 `rulePacks` names assemblies to load, each exposing one or more `IRulePack` implementations. A
 private or organisation-specific rule set therefore lives outside this repository and needs no
 change to it. A pack that fails to load is reported and skipped rather than stopping analysis.
+
+A worked example lives in `samples/`, and it builds and runs with everything else:
+
+```
+dotnet build Archon.slnx
+dotnet src/Archon.Cli/bin/Debug/net10.0/archon.dll check samples/example
+```
+
+```
+Orders.cs
+      5:1    warning     ACME0002  'System.Data.SqlClient' is under the forbidden namespace 'System.Data.SqlClient'.
+     15:22   error       ACME0001  HttpClient is constructed directly. Inject IHttpClientFactory instead.
+```
+
+`samples/AcmeRules` is the pack: a project referencing `Archon.Core`, one rule decidable from a
+single file, one rule that reads its own options and reports two conditions, and the `IRulePack`
+that lists them. `samples/example` is a workspace whose `.archon.json` loads the built assembly.
+
+Three things in that project file and configuration are worth copying:
+
+- **`Private="false"` on the project reference.** The process loading a pack has already loaded
+  `Archon.Core`. A second copy beside the pack risks the runtime binding to that one instead,
+  leaving two `IRulePack` types that are not the same type — the pack then loads without error and
+  contributes nothing.
+- **A parameterless constructor on the pack.** It is found by reflection and constructed directly.
+  There is no attribute to apply and no manifest to keep in step.
+- **A prefix of your own on rule ids.** An id already registered is refused with a diagnostic and
+  the rule is dropped, so `ACME0001` is safe where `AR0001` would collide.
+
+Once loaded, an external rule is indistinguishable from a built-in one. In the example above
+`ACME0001` takes `error` from its own key while `ACME0002` takes `warning` from the `architecture`
+category, and `// archon-ignore[ACME0001]` suppresses a finding the rule itself knows nothing
+about — configuration, suppression and the baseline are applied by the engine, which is why a rule
+never reads settings, never looks for an ignore comment and never chooses a severity.
+
+Two things to expect while writing one:
+
+- **Scope is a latency decision.** `File` re-runs on every save, `Workspace` only on request. A
+  rule declaring more scope than it needs is the main source of avoidable delay.
+- **A rebuilt pack needs a window reload, not a configuration reload.** An assembly already loaded
+  is never loaded again, so **Archon: Reload Configuration And Rules** will keep using the previous
+  build. Reload the window, or give each build a new assembly version.
 
 ## The host protocol
 
