@@ -9,9 +9,13 @@ import {
   parseBlame,
   splitMessage
 } from './history';
+import { ImpactLensProvider, describeImpact } from './impactLens';
 
 /**
- * Explains why a line exists, by showing the commit that last changed it.
+ * Explains why a line exists, by showing the commit that last changed it — and, when the line is a
+ * method declaration the impact lens already measured, how far that method reaches. The two used to
+ * be answered by separate hovers; folded together they answer the one question a change actually
+ * raises: what does touching this line affect, and who last touched it.
  *
  * Only the hovered line is blamed, so the cost is the same in a large file as in a small one. Commit
  * messages are cached for the session because they never change; blame results are cached per
@@ -21,7 +25,10 @@ export class HistoryHoverProvider implements vscode.HoverProvider {
   private readonly messages = new Map<string, { subject: string; body: string }>();
   private readonly blames = new Map<string, LineHistory | undefined>();
 
-  constructor(private readonly log: (message: string) => void) {}
+  constructor(
+    private readonly log: (message: string) => void,
+    private readonly impact: ImpactLensProvider
+  ) {}
 
   /** Drops cached blame for a file, leaving commit messages alone since those cannot go stale. */
   public forget(uri: vscode.Uri): void {
@@ -42,12 +49,13 @@ export class HistoryHoverProvider implements vscode.HoverProvider {
     document: vscode.TextDocument,
     position: vscode.Position
   ): Promise<vscode.Hover | undefined> {
-    if (!this.enabled() || document.uri.scheme !== 'file') {
+    if (document.uri.scheme !== 'file') {
       return undefined;
     }
 
-    const history = await this.historyFor(document, position.line);
-    if (!history) {
+    const history = this.historyEnabled() ? await this.historyFor(document, position.line) : undefined;
+    const method = this.impactMethodAt(document.uri, position.line);
+    if (!history && !method) {
       return undefined;
     }
 
@@ -55,32 +63,54 @@ export class HistoryHoverProvider implements vscode.HoverProvider {
     const markdown = new vscode.MarkdownString();
     markdown.isTrusted = false;
 
-    if (document.isDirty) {
-      markdown.appendMarkdown('Unsaved edits in this file — the line below may have moved.\n\n');
+    if (method) {
+      markdown.appendMarkdown(`${describeImpact(method)}\n\n`);
+      if (history) {
+        markdown.appendMarkdown('---\n\n');
+      }
     }
 
-    markdown.appendMarkdown(`**${escapeMarkdown(history.subject)}**\n\n`);
-    markdown.appendMarkdown(
-      `\`${history.shortHash}\` · ${escapeMarkdown(history.author)} · ${describeAge(history.authorTime, Date.now())}\n\n`
-    );
-    if (history.body) {
-      markdown.appendMarkdown(`${escapeMarkdown(history.body)}\n\n`);
-    }
+    if (history) {
+      if (document.isDirty) {
+        markdown.appendMarkdown('Unsaved edits in this file — the line below may have moved.\n\n');
+      }
 
-    const key = findIssueKey(
-      `${history.subject}\n${history.body}`,
-      settings.get<string>('history.issuePattern', '[A-Z][A-Z0-9]+-\\d+')
-    );
-    if (key) {
-      const url = issueUrl(settings.get<string>('history.issueUrl', ''), key);
-      markdown.appendMarkdown(url ? `[${key}](${url})` : `Issue \`${key}\``);
+      markdown.appendMarkdown(`**${escapeMarkdown(history.subject)}**\n\n`);
+      markdown.appendMarkdown(
+        `\`${history.shortHash}\` · ${escapeMarkdown(history.author)} · ${describeAge(history.authorTime, Date.now())}\n\n`
+      );
+      if (history.body) {
+        markdown.appendMarkdown(`${escapeMarkdown(history.body)}\n\n`);
+      }
+
+      const key = findIssueKey(
+        `${history.subject}\n${history.body}`,
+        settings.get<string>('history.issuePattern', '[A-Z][A-Z0-9]+-\\d+')
+      );
+      if (key) {
+        const url = issueUrl(settings.get<string>('history.issueUrl', ''), key);
+        markdown.appendMarkdown(url ? `[${key}](${url})` : `Issue \`${key}\``);
+      }
     }
 
     return new vscode.Hover(markdown);
   }
 
-  private enabled(): boolean {
+  private historyEnabled(): boolean {
     return vscode.workspace.getConfiguration('archon').get<boolean>('history.enabled', true);
+  }
+
+  /** Applies the same reference-count floor the lens uses, so the hover never shows a reach figure the lens itself hid. */
+  private impactMethodAt(uri: vscode.Uri, line: number) {
+    if (!vscode.workspace.getConfiguration('archon').get<boolean>('impact.enabled', true)) {
+      return undefined;
+    }
+    const method = this.impact.methodAt(uri, line);
+    if (!method) {
+      return undefined;
+    }
+    const threshold = vscode.workspace.getConfiguration('archon').get<number>('impact.minimumReferences', 1);
+    return method.referenceCount >= threshold ? method : undefined;
   }
 
   private async historyFor(document: vscode.TextDocument, line: number): Promise<LineHistory | undefined> {

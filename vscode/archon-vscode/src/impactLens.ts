@@ -64,26 +64,11 @@ export class ImpactLensProvider implements vscode.CodeLensProvider {
       .map((method) => {
         const range = new vscode.Range(method.line, method.column, method.line, method.column);
         return new vscode.CodeLens(range, {
-          title: this.title(method),
+          title: describeImpact(method),
           command: 'archon.showCallers',
           arguments: [method]
         });
       });
-  }
-
-  /**
-   * Every number is qualified. `~` marks counts matched by name and argument count rather than by
-   * resolved symbol, and `≥` marks a test count cut off by the search depth, so a lower bound is
-   * never mistaken for the total.
-   */
-  private title(method: MethodImpactInfo): string {
-    const references = `~${method.referenceCount} ${method.referenceCount === 1 ? 'caller' : 'callers'}`;
-    const projects =
-      method.projectCount > 1 ? ` in ${method.projectCount} projects` : '';
-    const tests = `${method.depthBounded ? '≥' : ''}${method.coveringTestCount} covering ${
-      method.coveringTestCount === 1 ? 'test' : 'tests'
-    }`;
-    return `${references}${projects} · ${tests}`;
   }
 
   private enabled(): boolean {
@@ -99,6 +84,16 @@ export class ImpactLensProvider implements vscode.CodeLensProvider {
 
   public forget(uri: vscode.Uri): void {
     this.cache.delete(uri.toString());
+  }
+
+  /**
+   * The cached impact of the method declared on one line, for a hover to fold in alongside blame —
+   * without this, reach and history read as two unrelated features rather than one answer to "what
+   * happens if I touch this line". Answers from cache only: a hover that blocked on a fresh workspace
+   * query would make pointing at a line feel slow.
+   */
+  public methodAt(uri: vscode.Uri, line: number): MethodImpactInfo | undefined {
+    return this.cache.get(uri.toString())?.methods.find((method) => method.line === line);
   }
 
   private async load(document: vscode.TextDocument, key: string): Promise<void> {
@@ -153,6 +148,20 @@ export async function showCallers(method: MethodImpactInfo): Promise<void> {
     return;
   }
   await reveal(picked.caller);
+}
+
+/**
+ * Every number is qualified. `~` marks counts matched by name and argument count rather than by
+ * resolved symbol, and `≥` marks a test count cut off by the search depth, so a lower bound is
+ * never mistaken for the total. Shared by the code lens label and the hover that folds it in.
+ */
+export function describeImpact(method: MethodImpactInfo): string {
+  const references = `~${method.referenceCount} ${method.referenceCount === 1 ? 'caller' : 'callers'}`;
+  const projects = method.projectCount > 1 ? ` in ${method.projectCount} projects` : '';
+  const tests = `${method.depthBounded ? '≥' : ''}${method.coveringTestCount} covering ${
+    method.coveringTestCount === 1 ? 'test' : 'tests'
+  }`;
+  return `${references}${projects} · ${tests}`;
 }
 
 async function reveal(caller: CallerInfo): Promise<void> {

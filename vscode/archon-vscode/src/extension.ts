@@ -1,6 +1,7 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { AnalysisReply, ArchonClient, FindingInfo, MethodImpactInfo, RuleInfo } from './client';
+import { PerfHintCodeActionProvider } from './codeActions';
 import { DiffHunk } from './diff';
 import { FocusLensProvider, FocusMode } from './focus';
 import { forgetRepositoryRoots } from './git';
@@ -51,7 +52,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   tree = new RulesTreeProvider();
   focus = new FocusMode(log, updateReviewStatus);
   impactLens = new ImpactLensProvider(() => client, log);
-  history = new HistoryHoverProvider(log);
+  history = new HistoryHoverProvider(log, impactLens);
 
   context.subscriptions.push(
     output,
@@ -64,6 +65,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.languages.registerCodeLensProvider({ language: 'csharp', scheme: 'file' }, impactLens),
     vscode.languages.registerCodeLensProvider({ scheme: 'file' }, new FocusLensProvider(focus)),
     vscode.languages.registerHoverProvider({ scheme: 'file' }, history),
+    vscode.languages.registerCodeActionsProvider(
+      { language: 'csharp', scheme: 'file' },
+      new PerfHintCodeActionProvider(),
+      { providedCodeActionKinds: PerfHintCodeActionProvider.providedCodeActionKinds }
+    ),
     vscode.commands.registerCommand('archon.analyzeWorkspace', analyzeWorkspace),
     vscode.commands.registerCommand('archon.analyzeActiveFile', () => {
       const editor = vscode.window.activeTextEditor;

@@ -113,7 +113,9 @@ build and 23 ms to query afterwards.
 **Why does this line exist?** Hovering shows the commit that last changed it, with its author, age
 and message body, and links the first issue key found. Only the hovered line is blamed, so cost does
 not grow with file size. `archon.history.issueUrl` is a template containing `{key}`, so any tracker
-can be addressed without naming one.
+can be addressed without naming one. Hovering a method already carrying an impact line folds its
+reach into the same tooltip, so how far a method reaches and who last changed it read as one answer
+rather than two.
 
 **What did this branch change?** Review mode dims everything a file has in common with the base ref
 and summarises each changed run above itself, with `Alt+Up` and `Alt+Down` to move between them. The
