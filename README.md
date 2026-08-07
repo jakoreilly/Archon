@@ -201,6 +201,10 @@ accepted finding as a new one.
 | `SQ0010` | warning | file | sql | A table reference breaks the hint policy |
 | `SQ0011` | warning | file | sql | A temporary table breaks the naming pattern |
 | `SQ0012` | warning | file | sql | A stored procedure breaks the naming pattern |
+| `AR0050` | warning | file | security | A string literal is assigned to a name that reads as a credential |
+| `AR0051` | warning | file | security | A cryptographic primitive known to be weak by its written name is used |
+| `AR0052` | information | file | security | System.Random is used for a value whose name reads as security-sensitive |
+| `AR0053` | warning | file | security | A regex pattern contains a group that is itself quantified, risking catastrophic backtracking |
 
 `Scope` is what a rule needs in order to decide, and therefore when it runs. A `file` rule runs on
 every save; a `project` rule also runs on save, over the project that owns the saved file; a

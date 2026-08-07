@@ -23,6 +23,7 @@ internal static class Program
 
         SqlWildcardRules(harness);
         SqlConventionRules(harness);
+        SecurityHotspotRules(harness);
         LayerRules(harness);
         LifetimeRules(harness);
         AsyncSafetyRules(harness);
@@ -125,6 +126,76 @@ internal static class Program
         badPattern.Add("a.sql", "CREATE PROCEDURE dbo.DoThing AS SELECT 1;");
         harness.Equal("ignores a pattern that does not compile rather than failing the pass", 0,
             badPattern.Analyse().Findings.CountOf(SqlConventionRule.ProcedureNaming));
+    }
+
+    private static void SecurityHotspotRules(Harness harness)
+    {
+        harness.Group("Security hotspots");
+
+        var credentialField = new TestWorkspace();
+        credentialField.Add("a.cs", "class C { string password = \"hunter2\"; }");
+        harness.Equal("flags a field initialised from a literal named like a credential", 1,
+            credentialField.Analyse().Findings.CountOf(SecurityHotspotRule.HardcodedCredential));
+
+        var credentialAssignment = new TestWorkspace();
+        credentialAssignment.Add("a.cs", "class C { string apiKey; void M() { apiKey = \"sk-live-abc\"; } }");
+        harness.Equal("flags an assignment to a credential-shaped name", 1,
+            credentialAssignment.Analyse().Findings.CountOf(SecurityHotspotRule.HardcodedCredential));
+
+        var emptyCredential = new TestWorkspace();
+        emptyCredential.Add("a.cs", "class C { string password = \"\"; }");
+        harness.Equal("does not flag an empty literal", 0,
+            emptyCredential.Analyse().Findings.CountOf(SecurityHotspotRule.HardcodedCredential));
+
+        var unrelatedField = new TestWorkspace();
+        unrelatedField.Add("a.cs", "class C { string title = \"hello\"; }");
+        harness.Equal("does not flag a field whose name does not read as a credential", 0,
+            unrelatedField.Analyse().Findings.CountOf(SecurityHotspotRule.HardcodedCredential));
+
+        var weakHashCreate = new TestWorkspace();
+        weakHashCreate.Add("a.cs", "class C { void M() { var h = System.Security.Cryptography.MD5.Create(); } }");
+        harness.Equal("flags MD5.Create()", 1,
+            weakHashCreate.Analyse().Findings.CountOf(SecurityHotspotRule.WeakCryptographicPrimitive));
+
+        var weakCipherNew = new TestWorkspace();
+        weakCipherNew.Add("a.cs", "class C { void M() { var d = new System.Security.Cryptography.DESCryptoServiceProvider(); } }");
+        harness.Equal("flags new DESCryptoServiceProvider()", 1,
+            weakCipherNew.Analyse().Findings.CountOf(SecurityHotspotRule.WeakCryptographicPrimitive));
+
+        var strongHash = new TestWorkspace();
+        strongHash.Add("a.cs", "class C { void M() { var h = System.Security.Cryptography.SHA256.Create(); } }");
+        harness.Equal("does not flag SHA256", 0,
+            strongHash.Analyse().Findings.CountOf(SecurityHotspotRule.WeakCryptographicPrimitive));
+
+        var insecureToken = new TestWorkspace();
+        insecureToken.Add("a.cs", "class C { void M() { var sessionToken = new System.Random(); } }");
+        harness.Equal("flags Random assigned to a security-shaped name", 1,
+            insecureToken.Analyse().Findings.CountOf(SecurityHotspotRule.InsecureRandomness));
+
+        var ordinaryRandom = new TestWorkspace();
+        ordinaryRandom.Add("a.cs", "class C { void M() { var dice = new System.Random(); } }");
+        harness.Equal("does not flag Random assigned to an ordinary name", 0,
+            ordinaryRandom.Analyse().Findings.CountOf(SecurityHotspotRule.InsecureRandomness));
+
+        var nestedQuantifier = new TestWorkspace();
+        nestedQuantifier.Add("a.cs", "class C { void M() { System.Text.RegularExpressions.Regex.IsMatch(\"x\", \"(a+)+\"); } }");
+        harness.Equal("flags a nested-quantifier pattern", 1,
+            nestedQuantifier.Analyse().Findings.CountOf(SecurityHotspotRule.CatastrophicBacktrackingRegex));
+
+        var safePattern = new TestWorkspace();
+        safePattern.Add("a.cs", "class C { void M() { System.Text.RegularExpressions.Regex.IsMatch(\"x\", \"^[a-z]+$\"); } }");
+        harness.Equal("does not flag a simple anchored pattern", 0,
+            safePattern.Analyse().Findings.CountOf(SecurityHotspotRule.CatastrophicBacktrackingRegex));
+
+        var newRegexNested = new TestWorkspace();
+        newRegexNested.Add("a.cs", "class C { void M() { var r = new System.Text.RegularExpressions.Regex(\"(\\\\d+)*\"); } }");
+        harness.Equal("flags a nested-quantifier pattern passed to 'new Regex(...)'", 1,
+            newRegexNested.Analyse().Findings.CountOf(SecurityHotspotRule.CatastrophicBacktrackingRegex));
+
+        var unrelatedRegexLikeCall = new TestWorkspace();
+        unrelatedRegexLikeCall.Add("a.cs", "class C { void M() { Validator.IsMatch(\"x\", \"(a+)+\"); } }");
+        harness.Equal("does not flag a same-named method on an unrelated type", 0,
+            unrelatedRegexLikeCall.Analyse().Findings.CountOf(SecurityHotspotRule.CatastrophicBacktrackingRegex));
     }
 
     private static void AsyncSafetyRules(Harness harness)
@@ -1076,8 +1147,8 @@ internal static class Program
         var registry = new RuleRegistry();
         registry.Add(new BuiltInRulePack());
 
-        harness.Equal("every built-in condition is registered", 22, registry.Descriptors.Count);
-        harness.Equal("rules that report several conditions are counted once as rules", 8, registry.Rules.Count);
+        harness.Equal("every built-in condition is registered", 26, registry.Descriptors.Count);
+        harness.Equal("rules that report several conditions are counted once as rules", 9, registry.Rules.Count);
         harness.Check("a descriptor can be found by id", registry.Find(SelectStarRule.Id) is not null);
         harness.Check("an unknown id resolves to nothing", registry.Find("ZZ9999") is null);
         harness.Check("registering the same pack twice is refused rather than duplicated",

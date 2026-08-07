@@ -23,5 +23,6 @@ public sealed class BuiltInRulePack : IRulePack
         yield return new ProjectCycleRule();
         yield return new SelectStarRule();
         yield return new SqlConventionRule();
+        yield return new SecurityHotspotRule();
     }
 }
