@@ -26,5 +26,6 @@ public sealed class BuiltInRulePack : IRulePack
         yield return new SecurityHotspotRule();
         yield return new ComplexityRule();
         yield return new UnusedSymbolsRule();
+        yield return new LogicHygieneRule();
     }
 }

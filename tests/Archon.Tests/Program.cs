@@ -26,6 +26,7 @@ internal static class Program
         SecurityHotspotRules(harness);
         ComplexityRules(harness);
         UnusedSymbolsRules(harness);
+        LogicHygieneRules(harness);
         LayerRules(harness);
         LifetimeRules(harness);
         AsyncSafetyRules(harness);
@@ -346,6 +347,61 @@ internal static class Program
         constLocal.Add("a.cs", "class C { void M() { const int Max = 10; } }");
         harness.Equal("does not flag a const local", 0,
             constLocal.Analyse().Findings.CountOf(UnusedSymbolsRule.UnusedLocalVariable));
+    }
+
+    private static void LogicHygieneRules(Harness harness)
+    {
+        harness.Group("Logic hygiene");
+
+        var ifTrue = new TestWorkspace();
+        ifTrue.Add("a.cs", "class C { void M() { if (true) { } } }");
+        harness.Equal("flags 'if (true)'", 1,
+            ifTrue.Analyse().Findings.CountOf(LogicHygieneRule.AlwaysTrueOrFalseCondition));
+
+        var ifFalse = new TestWorkspace();
+        ifFalse.Add("a.cs", "class C { void M() { if (false) { } } }");
+        harness.Equal("flags 'if (false)'", 1,
+            ifFalse.Analyse().Findings.CountOf(LogicHygieneRule.AlwaysTrueOrFalseCondition));
+
+        var ternaryLiteral = new TestWorkspace();
+        ternaryLiteral.Add("a.cs", "class C { int M() => true ? 1 : 2; }");
+        harness.Equal("flags a ternary with a literal condition", 1,
+            ternaryLiteral.Analyse().Findings.CountOf(LogicHygieneRule.AlwaysTrueOrFalseCondition));
+
+        var selfComparison = new TestWorkspace();
+        selfComparison.Add("a.cs", "class C { void M(int x) { if (x == x) { } } }");
+        harness.Equal("flags a self-comparison", 1,
+            selfComparison.Analyse().Findings.CountOf(LogicHygieneRule.AlwaysTrueOrFalseCondition));
+
+        var genuineComparison = new TestWorkspace();
+        genuineComparison.Add("a.cs", "class C { void M(int x, int y) { if (x == y) { } } }");
+        harness.Equal("does not flag comparing two different identifiers", 0,
+            genuineComparison.Analyse().Findings.CountOf(LogicHygieneRule.AlwaysTrueOrFalseCondition));
+
+        var infiniteLoop = new TestWorkspace();
+        infiniteLoop.Add("a.cs", "class C { void M() { while (true) { break; } } }");
+        harness.Equal("does not flag 'while (true)', an established idiom", 0,
+            infiniteLoop.Analyse().Findings.CountOf(LogicHygieneRule.AlwaysTrueOrFalseCondition));
+
+        var doWhileFalse = new TestWorkspace();
+        doWhileFalse.Add("a.cs", "class C { void M() { do { break; } while (false); } }");
+        harness.Equal("does not flag 'do { } while (false)', an established idiom", 0,
+            doWhileFalse.Analyse().Findings.CountOf(LogicHygieneRule.AlwaysTrueOrFalseCondition));
+
+        var writeLine = new TestWorkspace();
+        writeLine.Add("a.cs", "class C { void M() { System.Console.WriteLine(\"hi\"); } }");
+        harness.Equal("flags Console.WriteLine", 1,
+            writeLine.Analyse().Findings.CountOf(LogicHygieneRule.ConsoleUsedForOutput));
+
+        var consoleError = new TestWorkspace();
+        consoleError.Add("a.cs", "class C { void M() { System.Console.Error.WriteLine(\"hi\"); } }");
+        harness.Equal("flags Console.Error.WriteLine", 1,
+            consoleError.Analyse().Findings.CountOf(LogicHygieneRule.ConsoleUsedForOutput));
+
+        var loggerCall = new TestWorkspace();
+        loggerCall.Add("a.cs", "class C { void M(ILogger log) { log.WriteLine(\"hi\"); } }");
+        harness.Equal("does not flag a same-named method on an unrelated receiver", 0,
+            loggerCall.Analyse().Findings.CountOf(LogicHygieneRule.ConsoleUsedForOutput));
     }
 
     private static void AsyncSafetyRules(Harness harness)
@@ -1297,8 +1353,8 @@ internal static class Program
         var registry = new RuleRegistry();
         registry.Add(new BuiltInRulePack());
 
-        harness.Equal("every built-in condition is registered", 30, registry.Descriptors.Count);
-        harness.Equal("rules that report several conditions are counted once as rules", 11, registry.Rules.Count);
+        harness.Equal("every built-in condition is registered", 32, registry.Descriptors.Count);
+        harness.Equal("rules that report several conditions are counted once as rules", 12, registry.Rules.Count);
         harness.Check("a descriptor can be found by id", registry.Find(SelectStarRule.Id) is not null);
         harness.Check("an unknown id resolves to nothing", registry.Find("ZZ9999") is null);
         harness.Check("registering the same pack twice is refused rather than duplicated",

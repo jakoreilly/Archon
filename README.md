@@ -209,6 +209,8 @@ accepted finding as a new one.
 | `AR0061` | information | file | complexity | The same string literal appears several times in one file |
 | `AR0070` | hint | file | maintainability | A method parameter is never read in the method body |
 | `AR0071` | information | file | maintainability | A local variable is declared and never read again |
+| `AR0072` | information | file | maintainability | An 'if' or ternary condition is a literal true/false, or compares an identifier to itself |
+| `AR0073` | hint | file | maintainability | Console.Write/WriteLine is called directly instead of through a logger |
 
 `Scope` is what a rule needs in order to decide, and therefore when it runs. A `file` rule runs on
 every save; a `project` rule also runs on save, over the project that owns the saved file; a
