@@ -25,5 +25,6 @@ public sealed class BuiltInRulePack : IRulePack
         yield return new SqlConventionRule();
         yield return new SecurityHotspotRule();
         yield return new ComplexityRule();
+        yield return new UnusedSymbolsRule();
     }
 }

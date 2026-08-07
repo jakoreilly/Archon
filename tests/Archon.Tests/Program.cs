@@ -25,6 +25,7 @@ internal static class Program
         SqlConventionRules(harness);
         SecurityHotspotRules(harness);
         ComplexityRules(harness);
+        UnusedSymbolsRules(harness);
         LayerRules(harness);
         LifetimeRules(harness);
         AsyncSafetyRules(harness);
@@ -277,6 +278,74 @@ internal static class Program
         belowOccurrenceThreshold.Add("a.cs", "class C { string A() => \"not found in catalog\"; string B() => \"not found in catalog\"; }");
         harness.Equal("does not flag a literal repeated only twice against the default minimum of three", 0,
             belowOccurrenceThreshold.Analyse().Findings.CountOf(ComplexityRule.DuplicatedStringLiteral));
+    }
+
+    private static void UnusedSymbolsRules(Harness harness)
+    {
+        harness.Group("Unused parameters and locals");
+
+        var unusedParam = new TestWorkspace();
+        unusedParam.Add("a.cs", "class C { void M(int x) { } }");
+        harness.Equal("flags an unused parameter", 1,
+            unusedParam.Analyse().Findings.CountOf(UnusedSymbolsRule.UnusedParameter));
+
+        var usedParam = new TestWorkspace();
+        usedParam.Add("a.cs", "class C { void M(int x) { System.Console.WriteLine(x); } }");
+        harness.Equal("does not flag a parameter that is read", 0,
+            usedParam.Analyse().Findings.CountOf(UnusedSymbolsRule.UnusedParameter));
+
+        var underscoreParam = new TestWorkspace();
+        underscoreParam.Add("a.cs", "class C { void M(int _reserved) { } }");
+        harness.Equal("does not flag a parameter prefixed with an underscore", 0,
+            underscoreParam.Analyse().Findings.CountOf(UnusedSymbolsRule.UnusedParameter));
+
+        // The rule reads only the 'override' modifier on the method being checked, not whether a
+        // matching base member actually exists -- deliberate, same syntax-only stance as the rest
+        // of this rule pack (see UnusedSymbolsRule's class doc comment).
+        var overrideParam = new TestWorkspace();
+        overrideParam.Add("a.cs", "class C : Base { public override void M(int x) { } } class Base { public virtual void M(int x) { } }");
+        harness.Equal("does not flag an unused parameter on an override", 0,
+            overrideParam.Analyse().Findings.CountOf(UnusedSymbolsRule.UnusedParameter));
+
+        var explicitInterfaceParam = new TestWorkspace();
+        explicitInterfaceParam.Add("a.cs", "interface IFoo { void M(int x); } class C : IFoo { void IFoo.M(int x) { } }");
+        harness.Equal("does not flag an unused parameter on an explicit interface implementation", 0,
+            explicitInterfaceParam.Analyse().Findings.CountOf(UnusedSymbolsRule.UnusedParameter));
+
+        var eventHandlerParam = new TestWorkspace();
+        eventHandlerParam.Add("a.cs", "class C { void OnClick(object sender, System.EventArgs e) { } }");
+        harness.Equal("does not flag an event-handler-shaped method", 0,
+            eventHandlerParam.Analyse().Findings.CountOf(UnusedSymbolsRule.UnusedParameter));
+
+        var expressionBodied = new TestWorkspace();
+        expressionBodied.Add("a.cs", "class C { int M(int x, int y) => x + 1; }");
+        harness.Equal("flags an unused parameter on an expression-bodied method", 1,
+            expressionBodied.Analyse().Findings.CountOf(UnusedSymbolsRule.UnusedParameter));
+
+        var unusedLocal = new TestWorkspace();
+        unusedLocal.Add("a.cs", "class C { void M() { int total = 0; } }");
+        harness.Equal("flags an unused local", 1,
+            unusedLocal.Analyse().Findings.CountOf(UnusedSymbolsRule.UnusedLocalVariable));
+
+        var usedLocal = new TestWorkspace();
+        usedLocal.Add("a.cs", "class C { void M() { int total = 0; System.Console.WriteLine(total); } }");
+        harness.Equal("does not flag a local that is read later", 0,
+            usedLocal.Analyse().Findings.CountOf(UnusedSymbolsRule.UnusedLocalVariable));
+
+        var underscoreLocal = new TestWorkspace();
+        underscoreLocal.Add("a.cs", "class C { void M() { int _ignored = Compute(); } int Compute() => 1; }");
+        harness.Equal("does not flag a local prefixed with an underscore", 0,
+            underscoreLocal.Analyse().Findings.CountOf(UnusedSymbolsRule.UnusedLocalVariable));
+
+        var usingLocal = new TestWorkspace();
+        usingLocal.Add("a.cs", "class C { void M() { using var f = System.IO.File.OpenRead(\"x\"); } }");
+        harness.Equal("does not flag a 'using' local, which exists for disposal even if unread", 0,
+            usingLocal.Analyse().Findings.CountOf(UnusedSymbolsRule.UnusedLocalVariable));
+
+        var constLocal = new TestWorkspace();
+        constLocal.Add("a.cs", "class C { void M() { const int Max = 10; } }");
+        harness.Equal("does not flag a const local", 0,
+            constLocal.Analyse().Findings.CountOf(UnusedSymbolsRule.UnusedLocalVariable));
     }
 
     private static void AsyncSafetyRules(Harness harness)
@@ -1228,8 +1297,8 @@ internal static class Program
         var registry = new RuleRegistry();
         registry.Add(new BuiltInRulePack());
 
-        harness.Equal("every built-in condition is registered", 28, registry.Descriptors.Count);
-        harness.Equal("rules that report several conditions are counted once as rules", 10, registry.Rules.Count);
+        harness.Equal("every built-in condition is registered", 30, registry.Descriptors.Count);
+        harness.Equal("rules that report several conditions are counted once as rules", 11, registry.Rules.Count);
         harness.Check("a descriptor can be found by id", registry.Find(SelectStarRule.Id) is not null);
         harness.Check("an unknown id resolves to nothing", registry.Find("ZZ9999") is null);
         harness.Check("registering the same pack twice is refused rather than duplicated",

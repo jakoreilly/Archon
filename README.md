@@ -207,6 +207,8 @@ accepted finding as a new one.
 | `AR0053` | warning | file | security | A regex pattern contains a group that is itself quantified, risking catastrophic backtracking |
 | `AR0060` | warning | file | complexity | A method's cognitive complexity crosses the configured threshold (default 15) |
 | `AR0061` | information | file | complexity | The same string literal appears several times in one file |
+| `AR0070` | hint | file | maintainability | A method parameter is never read in the method body |
+| `AR0071` | information | file | maintainability | A local variable is declared and never read again |
 
 `Scope` is what a rule needs in order to decide, and therefore when it runs. A `file` rule runs on
 every save; a `project` rule also runs on save, over the project that owns the saved file; a
