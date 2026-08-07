@@ -205,6 +205,8 @@ accepted finding as a new one.
 | `AR0051` | warning | file | security | A cryptographic primitive known to be weak by its written name is used |
 | `AR0052` | information | file | security | System.Random is used for a value whose name reads as security-sensitive |
 | `AR0053` | warning | file | security | A regex pattern contains a group that is itself quantified, risking catastrophic backtracking |
+| `AR0060` | warning | file | complexity | A method's cognitive complexity crosses the configured threshold (default 15) |
+| `AR0061` | information | file | complexity | The same string literal appears several times in one file |
 
 `Scope` is what a rule needs in order to decide, and therefore when it runs. A `file` rule runs on
 every save; a `project` rule also runs on save, over the project that owns the saved file; a

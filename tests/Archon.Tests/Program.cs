@@ -24,6 +24,7 @@ internal static class Program
         SqlWildcardRules(harness);
         SqlConventionRules(harness);
         SecurityHotspotRules(harness);
+        ComplexityRules(harness);
         LayerRules(harness);
         LifetimeRules(harness);
         AsyncSafetyRules(harness);
@@ -196,6 +197,86 @@ internal static class Program
         unrelatedRegexLikeCall.Add("a.cs", "class C { void M() { Validator.IsMatch(\"x\", \"(a+)+\"); } }");
         harness.Equal("does not flag a same-named method on an unrelated type", 0,
             unrelatedRegexLikeCall.Analyse().Findings.CountOf(SecurityHotspotRule.CatastrophicBacktrackingRegex));
+    }
+
+    private static void ComplexityRules(Harness harness)
+    {
+        harness.Group("Complexity and duplication");
+
+        var simple = new TestWorkspace();
+        simple.Add("a.cs", "class C { void M(int x) { if (x > 0) { } } }");
+        harness.Equal("a single if stays under the default threshold", 0,
+            simple.Analyse().Findings.CountOf(ComplexityRule.CognitiveComplexity));
+
+        var nested = new TestWorkspace();
+        nested.Add("a.cs", """
+            class C
+            {
+                void M(int a, int b, int c, int d, int e)
+                {
+                    if (a > 0)
+                    {
+                        if (b > 0)
+                        {
+                            if (c > 0)
+                            {
+                                if (d > 0)
+                                {
+                                    if (e > 0) { }
+                                    else if (e < 0) { }
+                                    else { }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            """);
+        harness.Check("five levels of nested if crosses the default threshold of 15",
+            nested.Analyse().Findings.CountOf(ComplexityRule.CognitiveComplexity) == 1);
+
+        var lowThreshold = new TestWorkspace().WithOption(ComplexityRule.CognitiveComplexity, """{ "threshold": 0 }""");
+        lowThreshold.Add("a.cs", "class C { void M(int x) { if (x > 0) { } } }");
+        harness.Equal("a threshold of zero flags any branching at all", 1,
+            lowThreshold.Analyse().Findings.CountOf(ComplexityRule.CognitiveComplexity));
+
+        var recursive = new TestWorkspace().WithOption(ComplexityRule.CognitiveComplexity, """{ "threshold": 0 }""");
+        recursive.Add("a.cs", "class C { int M(int x) { return x <= 0 ? 0 : M(x - 1); } }");
+        harness.Check("a recursive call and its own ternary both raise complexity",
+            recursive.Analyse().Findings.CountOf(ComplexityRule.CognitiveComplexity) == 1);
+
+        var duplicated = new TestWorkspace();
+        duplicated.Add("a.cs", """
+            class C
+            {
+                string A() => "not found in catalog";
+                string B() => "not found in catalog";
+                string D() => "not found in catalog";
+            }
+            """);
+        harness.Equal("flags the second and third copy, not the first", 2,
+            duplicated.Analyse().Findings.CountOf(ComplexityRule.DuplicatedStringLiteral));
+
+        var shortLiteral = new TestWorkspace();
+        shortLiteral.Add("a.cs", "class C { string A() => \"ok\"; string B() => \"ok\"; string D() => \"ok\"; }");
+        harness.Equal("does not flag a literal shorter than the default minimum length", 0,
+            shortLiteral.Analyse().Findings.CountOf(ComplexityRule.DuplicatedStringLiteral));
+
+        var constant = new TestWorkspace();
+        constant.Add("a.cs", """
+            class C
+            {
+                const string Message = "not found in catalog";
+                string A() => Message;
+            }
+            """);
+        harness.Equal("does not flag a literal already assigned to a const", 0,
+            constant.Analyse().Findings.CountOf(ComplexityRule.DuplicatedStringLiteral));
+
+        var belowOccurrenceThreshold = new TestWorkspace();
+        belowOccurrenceThreshold.Add("a.cs", "class C { string A() => \"not found in catalog\"; string B() => \"not found in catalog\"; }");
+        harness.Equal("does not flag a literal repeated only twice against the default minimum of three", 0,
+            belowOccurrenceThreshold.Analyse().Findings.CountOf(ComplexityRule.DuplicatedStringLiteral));
     }
 
     private static void AsyncSafetyRules(Harness harness)
@@ -1147,8 +1228,8 @@ internal static class Program
         var registry = new RuleRegistry();
         registry.Add(new BuiltInRulePack());
 
-        harness.Equal("every built-in condition is registered", 26, registry.Descriptors.Count);
-        harness.Equal("rules that report several conditions are counted once as rules", 9, registry.Rules.Count);
+        harness.Equal("every built-in condition is registered", 28, registry.Descriptors.Count);
+        harness.Equal("rules that report several conditions are counted once as rules", 10, registry.Rules.Count);
         harness.Check("a descriptor can be found by id", registry.Find(SelectStarRule.Id) is not null);
         harness.Check("an unknown id resolves to nothing", registry.Find("ZZ9999") is null);
         harness.Check("registering the same pack twice is refused rather than duplicated",
