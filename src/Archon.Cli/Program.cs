@@ -20,12 +20,27 @@ internal static class Program
     private const int ExitFindings = 1;
     private const int ExitUsage = 2;
 
+    /// <summary>
+    /// Reported by <c>--version</c> and kept in step with the host and the extension by hand. It is
+    /// read from the assembly rather than written twice, so it cannot disagree with what shipped.
+    /// </summary>
+    private static string Version =>
+        typeof(Program).Assembly.GetName().Version is { } version
+            ? $"{version.Major}.{version.Minor}.{version.Build}"
+            : "unknown";
+
     private static int Main(string[] args)
     {
         if (args.Length == 0 || IsHelp(args[0]))
         {
             PrintUsage();
             return args.Length == 0 ? ExitUsage : ExitClean;
+        }
+
+        if (IsVersion(args[0]))
+        {
+            Console.WriteLine($"archon {Version}");
+            return ExitClean;
         }
 
         try
@@ -36,6 +51,8 @@ internal static class Program
                 "rules" => RunRules(args[1..]),
                 "baseline" => RunBaseline(args[1..]),
                 "explain" => RunExplain(args[1..]),
+                "init" => RunInit(args[1..]),
+                "schema" => RunSchema(args[1..]),
                 _ => Unknown(args[0])
             };
         }
@@ -48,6 +65,9 @@ internal static class Program
 
     private static bool IsHelp(string argument) =>
         argument is "-h" or "--help" or "help" or "-?" or "/?";
+
+    private static bool IsVersion(string argument) =>
+        argument is "--version" or "-v" or "version";
 
     private static int Unknown(string command)
     {
@@ -66,6 +86,9 @@ internal static class Program
               rules [path]        List every registered rule and its effective severity.
               baseline [path]     Record current findings as accepted, so only new ones fail.
               explain <ruleId>    Describe one rule.
+              init [path]         Write a starter .archon.json and its schema.
+              schema [path]       Print the JSON Schema for .archon.json.
+              --version           Print the version and exit.
 
             Options for check:
               --format <name>     console (default), json or sarif.
@@ -73,10 +96,20 @@ internal static class Program
               --no-baseline       Ignore the baseline file and report every finding.
               --output <file>     Write the report to a file instead of standard output.
 
+            Options for init:
+              --force             Overwrite an existing .archon.json.
+
+            Options for schema:
+              --output <file>     Write to a file instead of standard output.
+
             Exit codes:
               0  no finding at or above the --fail-on level
               1  at least one such finding
               2  the command could not run
+
+            Configuration entries that Archon cannot act on — an unknown rule id, a severity it
+            cannot parse, a layer name that matches nothing — are reported on standard error by
+            every command. They never stop a run.
             """);
     }
 
@@ -101,10 +134,7 @@ internal static class Program
             Console.Write(report);
         }
 
-        foreach (string message in session.Messages)
-        {
-            Console.Error.WriteLine($"archon: {message}");
-        }
+        ReportMessages(session);
 
         if (options.FailOn is null)
         {
@@ -130,7 +160,21 @@ internal static class Program
         Console.WriteLine(session.Config.SourcePath is null
             ? "No .archon.json found; showing default severities."
             : $"Configuration: {session.Config.SourcePath}");
+        ReportMessages(session);
         return ExitClean;
+    }
+
+    /// <summary>
+    /// Writes configuration and rule-pack messages to standard error, so they stay out of a report
+    /// being redirected to a file. Every command prints them: an entry that is being ignored is
+    /// most likely to be noticed while running <c>rules</c> to find out why a rule is not behaving.
+    /// </summary>
+    private static void ReportMessages(Session session)
+    {
+        foreach (string message in session.Messages)
+        {
+            Console.Error.WriteLine($"archon: {message}");
+        }
     }
 
     private static int RunBaseline(string[] args)
@@ -144,6 +188,7 @@ internal static class Program
         Baseline.Save(session.BaselinePath, result.Findings, session.Config.WorkspaceRoot);
         Console.WriteLine($"Recorded {result.Findings.Count} finding(s) in {session.BaselinePath}.");
         Console.WriteLine("These are now accepted; only new findings will fail a check.");
+        ReportMessages(session);
         return ExitClean;
     }
 
@@ -186,6 +231,79 @@ internal static class Program
         return ExitClean;
     }
 
+    /// <summary>
+    /// Writes a starter configuration and the schema describing it. The schema is written beside
+    /// the configuration and referenced from it, so completion and hover work in any editor that
+    /// reads <c>$schema</c> without a network fetch, a marketplace extension or a URL naming
+    /// anyone's server — the file describes the rules this installation has, including private packs.
+    /// </summary>
+    private static int RunInit(string[] args)
+    {
+        Options options = Options.Parse(args);
+        string directory = Directory.Exists(options.Path)
+            ? System.IO.Path.GetFullPath(options.Path)
+            : throw new ArgumentException($"'{options.Path}' is not a directory.");
+
+        string configPath = System.IO.Path.Combine(directory, ConfigLoader.FileName);
+        string schemaPath = System.IO.Path.Combine(directory, ConfigSchema.FileName);
+
+        if (File.Exists(configPath) && !options.Force)
+        {
+            Console.Error.WriteLine($"archon: {configPath} already exists. Pass --force to overwrite it.");
+            return ExitUsage;
+        }
+
+        Session session = Session.Create(directory);
+        File.WriteAllText(schemaPath, ConfigSchema.Generate(session.Engine.Registry));
+
+        // Deliberately minimal. Every key here is one the reader must think about; a scaffold
+        // pre-filled with plausible layers and excludes produces a file that looks configured while
+        // describing someone else's repository, and the schema already documents what may be added.
+        File.WriteAllText(configPath, $$"""
+            {
+              "$schema": "./{{ConfigSchema.FileName}}",
+              "rules": {},
+              "exclude": [],
+              "rulePacks": [],
+              "baseline": ".archon-baseline.json"
+            }
+
+            """);
+
+        Console.WriteLine($"Wrote {configPath}");
+        Console.WriteLine($"Wrote {schemaPath}  ({session.Engine.Registry.Descriptors.Count} rules described)");
+        Console.WriteLine();
+        Console.WriteLine("Next:");
+        Console.WriteLine("  archon rules .      see every rule and its current severity");
+        Console.WriteLine("  archon check .      analyse the workspace");
+        Console.WriteLine("  archon baseline .   accept what is already there, so only new findings fail");
+        return ExitClean;
+    }
+
+    /// <summary>
+    /// Prints the schema for the currently registered rules. Separate from <c>init</c> so that a
+    /// schema can be refreshed after adding a rule pack without touching an existing configuration.
+    /// </summary>
+    private static int RunSchema(string[] args)
+    {
+        Options options = Options.Parse(args);
+        Session session = Session.Create(options.Path);
+        string schema = ConfigSchema.Generate(session.Engine.Registry);
+
+        if (options.OutputPath is not null)
+        {
+            File.WriteAllText(options.OutputPath, schema);
+            Console.WriteLine($"Wrote {options.OutputPath} ({session.Engine.Registry.Descriptors.Count} rules described).");
+        }
+        else
+        {
+            Console.WriteLine(schema);
+        }
+
+        ReportMessages(session);
+        return ExitClean;
+    }
+
     /// <summary>Parsed command-line options, with defaults chosen so that a bare command is safe.</summary>
     private sealed record Options
     {
@@ -199,6 +317,9 @@ internal static class Program
         public bool UseBaseline { get; private init; } = true;
 
         public string? OutputPath { get; private init; }
+
+        /// <summary>Permits <c>init</c> to overwrite a configuration file that is already there.</summary>
+        public bool Force { get; private init; }
 
         public static Options Parse(string[] args)
         {
@@ -216,6 +337,9 @@ internal static class Program
                         break;
                     case "--no-baseline":
                         options = options with { UseBaseline = false };
+                        break;
+                    case "--force":
+                        options = options with { Force = true };
                         break;
                     case "--output":
                         options = options with { OutputPath = Next(args, ref i, "--output") };
@@ -306,6 +430,10 @@ internal static class Program
             {
                 messages.Add(baselineError);
             }
+
+            // After the registry, so that a rule id from an external pack is not reported as a
+            // misspelling merely because its pack had not loaded when the check ran.
+            messages.AddRange(ConfigValidator.Validate(config, registry));
 
             return new Session
             {

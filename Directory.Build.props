@@ -1,0 +1,33 @@
+<Project>
+
+  <!--
+    Properties shared by every project in the solution. Only settings that must agree across all of
+    them live here; per-project concerns stay in their own project file.
+  -->
+
+  <PropertyGroup>
+    <!--
+      Runs the .editorconfig style rules as part of the build rather than only in an editor. The
+      rules that carry a severity of `error` there are the mechanical ones — formatting and naming —
+      so a failure is always fixable by `dotnet format Archon.slnx`. Everything requiring judgement
+      is a suggestion and cannot fail a build.
+
+      This matters because every project also sets TreatWarningsAsErrors: without it, style would be
+      the one class of rule this repository states and then does not check, which is an odd position
+      for a static-analysis tool to take about its own source.
+    -->
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+
+    <!--
+      One version for everything the solution builds, so the version reported by the command line
+      and the version reported by the host cannot disagree. Both read it back from their own
+      assembly rather than repeating the number in a string literal.
+
+      Kept in step with vscode/archon-vscode/package.json by hand at release time. That file cannot
+      read this one, and a build step that rewrote a tracked file to keep them aligned would trade a
+      visible mismatch for an invisible one.
+    -->
+    <Version>0.2.3</Version>
+  </PropertyGroup>
+
+</Project>

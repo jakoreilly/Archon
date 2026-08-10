@@ -52,6 +52,8 @@ internal static class Program
         ServiceConventionRules(harness);
         ConventionPackTier2Rules(harness);
         SnippetCatalogRules(harness);
+        ConfigValidationRules(harness);
+        ConfigSchemaRules(harness);
 
         return harness.Report();
     }
@@ -1844,5 +1846,205 @@ internal static class Program
         conventions.Add(new ServiceConventionRulePack());
         harness.Check("every mapped SVC id is a registered rule id from Phase 3",
             conventionMappedIds.All(id => conventions.Find(id) is not null));
+    }
+
+    /// <summary>
+    /// Severity resolution is deliberately total: anything it cannot read is treated as absent. The
+    /// assertions below fix the other half of that bargain — that every entry resolution had to
+    /// ignore is reported — and, just as importantly, that a correct file reports nothing. A
+    /// validator that cried wolf on a working configuration would be turned off within a week.
+    /// </summary>
+    private static void ConfigValidationRules(Harness harness)
+    {
+        harness.Group("Configuration validation");
+
+        var registry = new RuleRegistry();
+        registry.Add(new BuiltInRulePack());
+
+        harness.Check("a configuration with nothing in it reports nothing",
+            ConfigValidator.Validate(new ArchonConfig(), registry).Count == 0);
+
+        var wellFormed = new ArchonConfig();
+        wellFormed.Rules["AR0001"] = "error";
+        wellFormed.Rules["performance"] = "information";
+        wellFormed.Rules["AR0005"] = "off";
+        wellFormed.Layers = new LayerConfig
+        {
+            Mode = "denylist",
+            Layers = new Dictionary<string, List<string>>(StringComparer.Ordinal)
+            {
+                ["Domain"] = new() { "MyApp.Domain" },
+                ["Infrastructure"] = new() { "MyApp.Infrastructure" }
+            },
+            Deny = new List<LayerEdge> { new() { Id = "pure", From = "Domain", To = "Infrastructure" } }
+        };
+        harness.Check("a correct configuration reports nothing",
+            ConfigValidator.Validate(wellFormed, registry).Count == 0);
+
+        var misspelledId = new ArchonConfig();
+        misspelledId.Rules["AR010"] = "off";
+        IReadOnlyList<string> idMessages = ConfigValidator.Validate(misspelledId, registry);
+        harness.Equal("a misspelled rule id is reported once", 1, idMessages.Count);
+        harness.Check("a misspelled rule id suggests the nearest real one",
+            idMessages[0].Contains("AR0010", StringComparison.Ordinal));
+
+        var misspelledSeverity = new ArchonConfig();
+        misspelledSeverity.Rules["AR0010"] = "eror";
+        IReadOnlyList<string> severityMessages = ConfigValidator.Validate(misspelledSeverity, registry);
+        harness.Equal("an unparseable severity is reported once", 1, severityMessages.Count);
+        harness.Check("an unparseable severity suggests the nearest real one",
+            severityMessages[0].Contains("'error'", StringComparison.Ordinal));
+        harness.Check("an unparseable severity states the default the rule keeps instead",
+            severityMessages[0].Contains("keeps its default of warning", StringComparison.Ordinal));
+
+        var aliases = new ArchonConfig();
+        aliases.Rules["AR0010"] = "warn";
+        aliases.Rules["AR0011"] = "info";
+        aliases.Rules["AR0012"] = "none";
+        harness.Check("the documented severity aliases are not reported as mistakes",
+            ConfigValidator.Validate(aliases, registry).Count == 0);
+
+        // A category is a legitimate key, so it must not be reported merely for not being an id.
+        var category = new ArchonConfig();
+        category.Rules["security"] = "error";
+        harness.Check("a category name is accepted as a rules key",
+            ConfigValidator.Validate(category, registry).Count == 0);
+
+        var badOption = new ArchonConfig();
+        badOption.Options["SQ0013"] = System.Text.Json.JsonDocument.Parse("{}").RootElement.Clone();
+        harness.Check("an options entry for an unknown rule id is reported",
+            ConfigValidator.Validate(badOption, registry).Any(m => m.Contains("never read", StringComparison.Ordinal)));
+
+        // The mode fallback is the permissive one, so a typo silently widens what is allowed.
+        var badMode = new ArchonConfig
+        {
+            Layers = new LayerConfig
+            {
+                Mode = "allowlst",
+                Layers = new Dictionary<string, List<string>>(StringComparer.Ordinal) { ["Domain"] = new() { "A" } }
+            }
+        };
+        harness.Check("an unrecognised layer mode is reported as falling back to denylist",
+            ConfigValidator.Validate(badMode, registry).Any(m => m.Contains("treated as denylist", StringComparison.Ordinal)));
+
+        // Layer names are compared with ordinal equality, unlike rule ids.
+        var wrongCase = new ArchonConfig
+        {
+            Layers = new LayerConfig
+            {
+                Mode = "denylist",
+                Layers = new Dictionary<string, List<string>>(StringComparer.Ordinal) { ["Domain"] = new() { "A" } },
+                Deny = new List<LayerEdge> { new() { Id = "e", From = "domain", To = "Domain" } }
+            }
+        };
+        harness.Check("a layer name differing only in case is reported as case-sensitive",
+            ConfigValidator.Validate(wrongCase, registry).Any(m => m.Contains("case-sensitive", StringComparison.Ordinal)));
+
+        var ignoredList = new ArchonConfig
+        {
+            Layers = new LayerConfig
+            {
+                Mode = "allowlist",
+                Layers = new Dictionary<string, List<string>>(StringComparer.Ordinal) { ["Domain"] = new() { "A" } },
+                Deny = new List<LayerEdge> { new() { Id = "e", From = "Domain", To = "Domain" } }
+            }
+        };
+        harness.Check("edges in the list the mode does not read are reported as never read",
+            ConfigValidator.Validate(ignoredList, registry).Any(m => m.Contains("never read", StringComparison.Ordinal)));
+
+        // An external pack's ids are only spellable once its pack is registered, so validating
+        // against the built-in set alone would report every private rule as a mistake.
+        var external = new ArchonConfig();
+        external.Rules["SVC0001"] = "error";
+        harness.Check("a rule id from an unloaded pack is reported against the built-in registry",
+            ConfigValidator.Validate(external, registry).Count == 1);
+
+        var withPack = new RuleRegistry();
+        withPack.Add(new BuiltInRulePack());
+        withPack.Add(new ServiceConventionRulePack());
+        harness.Check("the same id is accepted once its pack is registered",
+            ConfigValidator.Validate(external, withPack).Count == 0);
+
+        harness.Check("an unknown top-level key is reported with a suggestion",
+            ConfigValidator.Validate(UnknownKeyConfig("rule"), registry)
+                .Any(m => m.Contains("'rules'", StringComparison.Ordinal)));
+    }
+
+    private static ArchonConfig UnknownKeyConfig(string key)
+    {
+        var config = new ArchonConfig();
+        config.UnknownKeys.Add(key);
+        return config;
+    }
+
+    /// <summary>
+    /// The schema is what stops most bad entries being typed at all, so what matters is that it is
+    /// generated from the registry rather than fixed, and that it stays valid JSON an editor will load.
+    /// </summary>
+    private static void ConfigSchemaRules(Harness harness)
+    {
+        harness.Group("Configuration schema");
+
+        var registry = new RuleRegistry();
+        registry.Add(new BuiltInRulePack());
+        string schema = ConfigSchema.Generate(registry);
+
+        System.Text.Json.JsonDocument document = System.Text.Json.JsonDocument.Parse(schema);
+        System.Text.Json.JsonElement root = document.RootElement;
+
+        harness.Check("the schema is a JSON object", root.ValueKind == System.Text.Json.JsonValueKind.Object);
+
+        System.Text.Json.JsonElement ruleProperties = root
+            .GetProperty("properties").GetProperty("rules").GetProperty("properties");
+
+        harness.Check("every registered rule id appears as a property",
+            registry.Descriptors.All(r => ruleProperties.TryGetProperty(r.Descriptor.Id, out _)));
+
+        harness.Check("every category appears as a property",
+            registry.Descriptors.Select(r => r.Descriptor.Category).Distinct()
+                .All(c => ruleProperties.TryGetProperty(c, out _)));
+
+        // Descriptions next to a $ref are not required to be honoured, so the enum is written in
+        // place; this asserts the property is self-contained rather than a reference.
+        System.Text.Json.JsonElement one = ruleProperties.GetProperty("AR0001");
+        harness.Check("a rule property carries its own severity enum rather than a $ref",
+            one.TryGetProperty("enum", out _) && !one.TryGetProperty("$ref", out _));
+        harness.Check("a rule property is described with its title",
+            one.GetProperty("description").GetString()!.Contains("Layer dependency", StringComparison.Ordinal));
+
+        harness.Check("the severity enum is exactly the documented vocabulary",
+            one.GetProperty("enum").EnumerateArray().Select(e => e.GetString()!)
+                .SequenceEqual(ArchonConfig.SeverityNames));
+
+        harness.Check("unknown rule ids stay permitted, for packs absent on this machine",
+            root.GetProperty("properties").GetProperty("rules")
+                .GetProperty("additionalProperties").ValueKind == System.Text.Json.JsonValueKind.Object);
+
+        harness.Check("the top level is closed, so a misspelled setting is caught",
+            root.GetProperty("additionalProperties").ValueKind == System.Text.Json.JsonValueKind.False);
+
+        harness.Check("layer mode is constrained to the two it accepts",
+            root.GetProperty("properties").GetProperty("layers").GetProperty("properties")
+                .GetProperty("mode").GetProperty("enum").EnumerateArray()
+                .Select(e => e.GetString()).SequenceEqual(new[] { "denylist", "allowlist" }));
+
+        // The generated schema must describe the file the scaffold writes, or `archon init`
+        // produces a pair that disagree from the moment they are created.
+        harness.Check("every key the scaffold writes is a key the schema permits",
+            new[] { "rules", "exclude", "rulePacks", "baseline" }
+                .All(k => root.GetProperty("properties").TryGetProperty(k, out _)));
+
+        harness.Check("the keys the loader binds are the keys the schema declares",
+            ConfigSchema.KnownKeys.All(k => root.GetProperty("properties").TryGetProperty(k, out _)));
+
+        var withPack = new RuleRegistry();
+        withPack.Add(new BuiltInRulePack());
+        withPack.Add(new ServiceConventionRulePack());
+        harness.Check("a registered external pack contributes its ids to the schema",
+            System.Text.Json.JsonDocument.Parse(ConfigSchema.Generate(withPack)).RootElement
+                .GetProperty("properties").GetProperty("rules").GetProperty("properties")
+                .TryGetProperty("SVC0001", out _));
+
+        document.Dispose();
     }
 }

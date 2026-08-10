@@ -34,7 +34,11 @@ internal static class Program
     {
         if (args.Contains("--version"))
         {
-            Console.WriteLine("archon-host 0.2.1");
+            // Read from the assembly rather than written here. The extension checks this against the
+            // host it bundles, and a literal that has to be edited in step with the build is exactly
+            // the kind of thing that ships one release behind without anyone noticing.
+            Version? version = typeof(Program).Assembly.GetName().Version;
+            Console.WriteLine($"archon-host {(version is null ? "unknown" : $"{version.Major}.{version.Minor}.{version.Build}")}");
             return 0;
         }
 

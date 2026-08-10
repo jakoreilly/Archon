@@ -64,10 +64,25 @@ public sealed class ArchonConfig
     [JsonIgnore]
     public Dictionary<string, Severity> SessionOverrides { get; } = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// Top-level keys present in the file that bind to nothing. Deserialization discards unknown
+    /// members silently, so they are collected during loading or they cannot be reported at all.
+    /// </summary>
+    [JsonIgnore]
+    public List<string> UnknownKeys { get; } = new();
+
     public static readonly string[] DefaultExcludes =
     {
         "**/bin/**", "**/obj/**", "**/node_modules/**", "**/.git/**"
     };
+
+    /// <summary>
+    /// The severity words a configuration file may use, ordered from most to least severe. This is
+    /// the canonical list: <see cref="TryParseSeverity"/> accepts these plus a few aliases, and both
+    /// the schema and the validator present these, so the vocabulary is stated in one place rather
+    /// than repeated in three that can drift apart.
+    /// </summary>
+    public static readonly string[] SeverityNames = { "error", "warning", "information", "hint", "off" };
 
     /// <summary>
     /// Resolves a rule's effective severity. Precedence is session override, then an explicit
@@ -181,12 +196,58 @@ public static class ConfigLoader
             ArchonConfig config = JsonSerializer.Deserialize<ArchonConfig>(json, ReadOptions) ?? new ArchonConfig();
             config.SourcePath = path;
             config.WorkspaceRoot = Path.GetDirectoryName(path) ?? Path.GetFullPath(workspaceRoot);
+            config.UnknownKeys.AddRange(UnboundKeys(json));
             return config;
         }
         catch (Exception ex) when (ex is JsonException or IOException)
         {
             error = $"Could not read '{path}': {ex.Message}. Continuing with default settings.";
             return new ArchonConfig { WorkspaceRoot = Path.GetFullPath(workspaceRoot) };
+        }
+    }
+
+    /// <summary>
+    /// Top-level property names that no setting binds to. Reading the document a second time is the
+    /// only way to see them: the deserializer's job is to be permissive about a file it does not
+    /// fully recognise, and it discards what it cannot place without recording that it did.
+    ///
+    /// <c>$schema</c> is excluded because an editor puts it there on purpose.
+    /// </summary>
+    private static IEnumerable<string> UnboundKeys(string json)
+    {
+        JsonDocument document;
+        try
+        {
+            document = JsonDocument.Parse(json, new JsonDocumentOptions
+            {
+                CommentHandling = JsonCommentHandling.Skip,
+                AllowTrailingCommas = true
+            });
+        }
+        catch (JsonException)
+        {
+            // Unreachable in practice: deserialization has already succeeded on this text. Reported
+            // as "nothing unknown" rather than thrown, because a second parse must never be the
+            // thing that fails a load the first parse allowed.
+            yield break;
+        }
+
+        using (document)
+        {
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                yield break;
+            }
+
+            foreach (JsonProperty property in document.RootElement.EnumerateObject())
+            {
+                bool bound = property.NameEquals("$schema")
+                    || ConfigSchema.KnownKeys.Contains(property.Name, StringComparer.OrdinalIgnoreCase);
+                if (!bound)
+                {
+                    yield return property.Name;
+                }
+            }
         }
     }
 }

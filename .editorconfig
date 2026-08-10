@@ -1,0 +1,261 @@
+# Archon house style.
+#
+# This file describes the style the code already has, rather than importing someone else's.
+# Every setting below was chosen by reading the existing sources, so adopting it produced no
+# reformatting: `dotnet format --verify-no-changes` passes on the tree as it stands.
+#
+# Severity policy, which matters here because every project sets TreatWarningsAsErrors:
+#
+#   error       Formatting and naming. These are mechanical, `dotnet format` fixes them, and
+#               there is nothing to argue about. Enforced in the build via EnforceCodeStyleInBuild.
+#   suggestion  Language style — `var`, expression bodies, pattern matching. These are judgement
+#               calls with real exceptions, so they surface in the editor and never fail a build.
+#   none        Rules that contradict how this codebase is written, switched off explicitly and
+#               with the reason recorded, so the next person knows it was a decision.
+#
+# A style rule that fails a build must be fixable by a command. A style rule that needs judgement
+# must not fail a build. That line is why the two groups are severity-split rather than uniform.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{json,jsonc,yml,yaml}]
+indent_size = 2
+
+# The extension is TypeScript with two-space indentation and single quotes; tsconfig.json already
+# governs its type checking, and this only records the layout so an editor does not fight it.
+[*.{ts,js,mjs,cjs}]
+indent_size = 2
+quote_type = single
+
+[*.md]
+# Two trailing spaces are a hard line break in Markdown, so trimming them silently rewrites prose.
+trim_trailing_whitespace = false
+
+[*.{csproj,props,targets,slnx,vsixmanifest}]
+indent_size = 2
+
+[*.cs]
+indent_size = 4
+
+#### Language conventions ####
+
+# `this.` is never written in this codebase. IDE0003/IDE0009 are the rules that would demand it.
+dotnet_style_qualification_for_field = false:error
+dotnet_style_qualification_for_property = false:error
+dotnet_style_qualification_for_method = false:error
+dotnet_style_qualification_for_event = false:error
+
+# Language keywords over BCL type names: `string`, not `String`. Uniform in the existing sources.
+dotnet_style_predefined_type_for_locals_parameters_members = true:error
+dotnet_style_predefined_type_for_member_access = true:error
+
+# `var` only where the right-hand side already names the type — `var builder = new StringBuilder()`
+# — and the explicit type everywhere else, which is why `ArchonConfig config = ConfigLoader.Load(…)`
+# and `Severity severity = config.SeverityFor(descriptor)` are written out. Left at suggestion:
+# factory calls such as `Stopwatch.StartNew()` and `assembly.GetTypes().Where(…).ToList()` sit on
+# the boundary of "apparent", and both readings appear in the tree.
+csharp_style_var_for_built_in_types = false:suggestion
+csharp_style_var_when_type_is_apparent = true:suggestion
+csharp_style_var_elsewhere = false:suggestion
+
+# Expression bodies where the member is genuinely one expression. Widely used here — see
+# `RuleExtensions`, `Reporter.Label`, `AnalysisSession.InvalidateWorkspace` — but a multi-line
+# expression body is worse than a block, so this stays advisory.
+csharp_style_expression_bodied_methods = when_on_single_line:suggestion
+csharp_style_expression_bodied_properties = true:suggestion
+csharp_style_expression_bodied_accessors = true:suggestion
+csharp_style_expression_bodied_indexers = true:suggestion
+csharp_style_expression_bodied_lambdas = true:suggestion
+csharp_style_expression_bodied_constructors = false:suggestion
+csharp_style_expression_bodied_operators = false:suggestion
+
+# Pattern matching, used heavily: `is { } line`, `t is { IsAbstract: false, IsInterface: false }`,
+# `argument is "-h" or "--help"`, `ex is JsonException or IOException`.
+csharp_style_pattern_matching_over_is_with_cast_check = true:suggestion
+csharp_style_pattern_matching_over_as_with_null_check = true:suggestion
+csharp_style_prefer_pattern_matching = true:suggestion
+csharp_style_prefer_not_pattern = true:suggestion
+csharp_style_prefer_switch_expression = true:suggestion
+csharp_style_prefer_extended_property_pattern = true:suggestion
+
+# Null handling.
+dotnet_style_null_propagation = true:suggestion
+dotnet_style_coalesce_expression = true:suggestion
+csharp_style_conditional_delegate_call = true:suggestion
+csharp_style_prefer_null_check_over_type_check = true:suggestion
+csharp_style_throw_expression = true:suggestion
+
+# Modern syntax the sources already use: file-scoped namespaces throughout, target-typed `new`,
+# collection initialisers, range and index operators (`args[1..]`, `hash[..16]`).
+csharp_style_namespace_declarations = file_scoped:error
+csharp_style_implicit_object_creation_when_type_is_apparent = true:suggestion
+csharp_style_prefer_range_operator = true:suggestion
+csharp_style_prefer_index_operator = true:suggestion
+dotnet_style_object_initializer = true:suggestion
+dotnet_style_collection_initializer = true:suggestion
+dotnet_style_prefer_conditional_expression_over_assignment = true:suggestion
+dotnet_style_prefer_conditional_expression_over_return = true:suggestion
+csharp_style_prefer_method_group_conversion = true:suggestion
+csharp_style_prefer_top_level_statements = false:suggestion
+csharp_style_prefer_primary_constructors = false:suggestion
+
+# Immutability, which the rule and finding types lean on: `sealed record Finding` with `init`
+# accessors, `readonly record struct SourceSpan`.
+dotnet_style_readonly_field = true:suggestion
+csharp_prefer_static_local_function = true:suggestion
+csharp_style_prefer_readonly_struct = true:suggestion
+csharp_style_prefer_readonly_struct_member = true:suggestion
+dotnet_style_prefer_auto_properties = true:suggestion
+dotnet_style_prefer_is_null_check_over_reference_equality_method = true:suggestion
+
+# Braces are always written, even around a single statement. This is uniform in the sources and is
+# load-bearing for a tool whose own rules read control flow, so it is enforced rather than advised.
+csharp_prefer_braces = true:error
+
+# Unused parameters are flagged by AR0070, this project's own rule. Leaving IDE0060 on as well
+# would report the same thing twice in the editor with different wording.
+dotnet_code_quality_unused_parameters = all:none
+
+# `using` placement: outside the namespace, System first. Both are already uniform.
+csharp_using_directive_placement = outside_namespace:error
+dotnet_sort_system_directives_first = true
+dotnet_separate_import_directive_groups = false
+
+#### Formatting ####
+
+csharp_new_line_before_open_brace = all
+csharp_new_line_before_else = true
+csharp_new_line_before_catch = true
+csharp_new_line_before_finally = true
+# Left off deliberately. `SnippetCatalog.ByRuleId` puts the rule ids that share a pointer on one
+# line — `["AR0010"] = FireAndForget, ["AR0011"] = FireAndForget` — so the grouping is visible at a
+# glance. Requiring one member per line would spread that table over three times the height and
+# hide the very thing it is arranged to show.
+csharp_new_line_before_members_in_object_initializers = false
+csharp_new_line_before_members_in_anonymous_types = true
+csharp_new_line_between_query_expression_clauses = true
+
+csharp_indent_case_contents = true
+csharp_indent_case_contents_when_block = false
+csharp_indent_switch_labels = true
+csharp_indent_labels = one_less_than_current
+csharp_indent_block_contents = true
+csharp_indent_braces = false
+
+csharp_space_after_cast = false
+csharp_space_after_keywords_in_control_flow_statements = true
+csharp_space_before_colon_in_inheritance_clause = true
+csharp_space_after_colon_in_inheritance_clause = true
+csharp_space_around_binary_operators = before_and_after
+csharp_space_between_method_declaration_parameter_list_parentheses = false
+csharp_space_between_method_declaration_empty_parameter_list_parentheses = false
+csharp_space_between_method_declaration_name_and_open_parenthesis = false
+csharp_space_between_method_call_parameter_list_parentheses = false
+csharp_space_between_method_call_empty_parameter_list_parentheses = false
+csharp_space_between_method_call_name_and_opening_parenthesis = false
+csharp_space_after_comma = true
+csharp_space_before_comma = false
+csharp_space_after_dot = false
+csharp_space_before_dot = false
+csharp_space_after_semicolon_in_for_statement = true
+csharp_space_before_semicolon_in_for_statement = false
+csharp_space_around_declaration_statements = false
+csharp_space_before_open_square_brackets = false
+csharp_space_between_empty_square_brackets = false
+csharp_space_between_square_brackets = false
+
+csharp_preserve_single_line_statements = false
+csharp_preserve_single_line_blocks = true
+
+# IDE0055 is every formatting rule above, reported as one diagnostic. `dotnet format` fixes it.
+dotnet_diagnostic.IDE0055.severity = error
+
+#### Naming ####
+
+# Each rule below carries its own `.severity`, which is what an editor reads. A build reads
+# IDE1006 instead — the single diagnostic every naming rule reports through — and it defaults to
+# silent, so without this line the naming rules below would be advisory in the editor and absent
+# from the build no matter what severity each one claims.
+dotnet_diagnostic.IDE1006.severity = error
+
+dotnet_naming_style.pascal_case.capitalization = pascal_case
+dotnet_naming_style.camel_case.capitalization = camel_case
+dotnet_naming_style.underscore_camel_case.capitalization = camel_case
+dotnet_naming_style.underscore_camel_case.required_prefix = _
+dotnet_naming_style.interface_prefix.capitalization = pascal_case
+dotnet_naming_style.interface_prefix.required_prefix = I
+dotnet_naming_style.type_parameter_prefix.capitalization = pascal_case
+dotnet_naming_style.type_parameter_prefix.required_prefix = T
+
+dotnet_naming_symbols.interfaces.applicable_kinds = interface
+dotnet_naming_symbols.interfaces.applicable_accessibilities = *
+dotnet_naming_rule.interfaces_are_i_prefixed.symbols = interfaces
+dotnet_naming_rule.interfaces_are_i_prefixed.style = interface_prefix
+dotnet_naming_rule.interfaces_are_i_prefixed.severity = error
+
+dotnet_naming_symbols.type_parameters.applicable_kinds = type_parameter
+dotnet_naming_symbols.type_parameters.applicable_accessibilities = *
+dotnet_naming_rule.type_parameters_are_t_prefixed.symbols = type_parameters
+dotnet_naming_rule.type_parameters_are_t_prefixed.style = type_parameter_prefix
+dotnet_naming_rule.type_parameters_are_t_prefixed.severity = error
+
+dotnet_naming_symbols.types_and_members.applicable_kinds = class, struct, enum, delegate, property, method, event, namespace
+dotnet_naming_symbols.types_and_members.applicable_accessibilities = *
+dotnet_naming_rule.types_and_members_are_pascal_case.symbols = types_and_members
+dotnet_naming_rule.types_and_members_are_pascal_case.style = pascal_case
+dotnet_naming_rule.types_and_members_are_pascal_case.severity = error
+
+# The three field rules below are order-sensitive: the first rule whose symbol group matches a
+# symbol is the one applied, so they run most specific first. Putting the private-field rule first
+# instead makes it swallow every `private static readonly` field and demand an underscore on
+# `JsonOptions`, `DefaultExcludes` and the rest.
+
+# `const` is PascalCase regardless of accessibility: `ExitClean`, `Separator`, `FileName`.
+dotnet_naming_symbols.constants.applicable_kinds = field
+dotnet_naming_symbols.constants.applicable_accessibilities = *
+dotnet_naming_symbols.constants.required_modifiers = const
+dotnet_naming_rule.constants_are_pascal_case.symbols = constants
+dotnet_naming_rule.constants_are_pascal_case.style = pascal_case
+dotnet_naming_rule.constants_are_pascal_case.severity = error
+
+# `static readonly` likewise: `DefaultExcludes`, `ReadOptions`, `JsonOptions`, `MethodLifetimes`.
+# Both modifiers are required together, which is what separates these from a mutable `private
+# static` field such as the host's `_session` — that one is state, and keeps its underscore.
+dotnet_naming_symbols.static_readonly_fields.applicable_kinds = field
+dotnet_naming_symbols.static_readonly_fields.applicable_accessibilities = *
+dotnet_naming_symbols.static_readonly_fields.required_modifiers = static, readonly
+dotnet_naming_rule.static_readonly_fields_are_pascal_case.symbols = static_readonly_fields
+dotnet_naming_rule.static_readonly_fields_are_pascal_case.style = pascal_case
+dotnet_naming_rule.static_readonly_fields_are_pascal_case.severity = error
+
+# Everything else private: `_registry`, `_sources`, `_byId`, `_failures`, `_session`. This is the
+# rule SA1309 would forbid, and the single biggest reason the stock StyleCop ruleset does not fit.
+dotnet_naming_symbols.private_fields.applicable_kinds = field
+dotnet_naming_symbols.private_fields.applicable_accessibilities = private, private_protected
+dotnet_naming_rule.private_fields_are_underscore_prefixed.symbols = private_fields
+dotnet_naming_rule.private_fields_are_underscore_prefixed.style = underscore_camel_case
+dotnet_naming_rule.private_fields_are_underscore_prefixed.severity = error
+
+dotnet_naming_symbols.parameters_and_locals.applicable_kinds = parameter, local
+dotnet_naming_symbols.parameters_and_locals.applicable_accessibilities = *
+dotnet_naming_rule.parameters_and_locals_are_camel_case.symbols = parameters_and_locals
+dotnet_naming_rule.parameters_and_locals_are_camel_case.style = camel_case
+dotnet_naming_rule.parameters_and_locals_are_camel_case.severity = error
+
+#### Documentation ####
+
+# Deliberately not required. The sources document types and the members whose contract is not
+# obvious from the signature, and say nothing where a name already says it — `public string Root
+# { get; }` needs no sentence. StyleCop's SA1600 family would demand one on every public member,
+# which with TreatWarningsAsErrors turns "I added a property" into a build break and, worse,
+# produces a wall of restated-name prose that makes the comments that carry real information
+# harder to find. GenerateDocumentationFile is false in every project for the same reason.
+dotnet_diagnostic.CS1591.severity = none

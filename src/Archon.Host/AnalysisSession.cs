@@ -86,6 +86,12 @@ internal sealed class AnalysisSession
             _messages.Add(baselineError);
         }
 
+        // Validated once the registry exists, because an id is only known to be misspelled after
+        // the packs that could have declared it have loaded. These reach the editor through the
+        // same 'messages' array as a malformed file, so a silently ignored entry is visible in the
+        // log rather than only discoverable by noticing a rule did not do what it was told.
+        _messages.AddRange(ConfigValidator.Validate(config, registry));
+
         Config = config;
         Registry = registry;
         Baseline = baseline;

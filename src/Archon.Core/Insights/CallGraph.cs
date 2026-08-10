@@ -1,8 +1,8 @@
+using Archon.Core.Rules;
+using Archon.Core.Sources;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
-using Archon.Core.Rules;
-using Archon.Core.Sources;
 
 namespace Archon.Core.Insights;
 

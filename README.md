@@ -47,9 +47,14 @@ dotnet src/Archon.Cli/bin/Debug/net10.0/archon.dll check tests/fixtures/sample
 The extension's own parsers are tested separately, without VS Code, by `npm test` in
 `vscode/archon-vscode`.
 
-Copy `.archon.example.json` to `.archon.json` at the root of the repository you want to analyse
-and edit it. Without a configuration file everything runs at its default severity, except the
-layering rule, which stays silent until layers are declared.
+`archon init` writes a starter `.archon.json` at the root of the repository you want to analyse,
+along with the JSON Schema describing it. `.archon.example.json` shows a fuller one to copy from.
+Without a configuration file everything runs at its default severity, except the layering rule,
+which stays silent until layers are declared.
+
+The house style is described by `.editorconfig` and enforced by the build, so `dotnet format
+Archon.slnx` is the fix for any style failure. Only the mechanical rules — formatting and naming —
+can fail a build; anything needing judgement is a suggestion an editor shows and no build reads.
 
 ## The command line
 
@@ -58,10 +63,13 @@ archon check [path]        Analyse a folder or file and report findings.
 archon rules [path]        List every rule and its effective severity.
 archon baseline [path]     Accept current findings, so only new ones fail.
 archon explain <ruleId>    Describe one rule.
+archon init [path]         Write a starter .archon.json and its schema.
+archon schema [path]       Print the JSON Schema for .archon.json.
+archon --version           Print the version.
 ```
 
 `check` takes `--format console|json|sarif`, `--fail-on error|warning|information|hint|never`,
-`--no-baseline` and `--output <file>`.
+`--no-baseline` and `--output <file>`. `init` takes `--force`, and `schema` takes `--output <file>`.
 
 Exit codes are `0` when nothing reached the `--fail-on` level, `1` when something did, and `2`
 when the command could not run. A pipeline step is usually:
@@ -78,7 +86,7 @@ npm install
 npm run publish-host
 npm run compile
 npx @vscode/vsce package
-code --install-extension archon-analysis-0.2.1.vsix
+code --install-extension archon-analysis-0.2.3.vsix
 ```
 
 The packaged `.vsix` carries its own published host, so installing it needs only the .NET runtime.
@@ -151,6 +159,41 @@ with no explanation reads as a fault rather than as "nothing changed here".
 A key in `rules` is either a rule id or a category name, so a whole family can be set at once; an
 explicit id always wins over its category. Severities are `error`, `warning`, `information`,
 `hint` and `off`.
+
+### When configuration says something Archon cannot act on
+
+Resolution is deliberately total: an entry it cannot read is treated as absent, because a file
+that stopped analysis on a typo would be worse than one that ignored it. The cost is that the
+failure is invisible — `"AR010": "off"` reads as switching a rule off and in fact does nothing,
+and `"AR0010": "eror"` leaves the rule at its default rather than raising it.
+
+Every surface therefore reports what resolution had to ignore, on standard error for the command
+line and in `messages` for the host:
+
+```
+archon: Configuration: 'AR010' in "rules" is not a known rule id or category — did you mean
+        'AR0010'? The entry has no effect.
+archon: Configuration: layer edge 'domain-stays-pure' in "deny" names 'domain' as its "from"
+        layer, which is not declared, so the edge never matches. Layer names are case-sensitive;
+        the declared layer is 'Domain'.
+```
+
+These are warnings about the configuration and never stop a run. Layer names are compared exactly,
+unlike rule ids, which is why case is called out. A `mode` that is neither `denylist` nor
+`allowlist` falls back to `denylist` — the permissive reading — so a misspelling of `allowlist`
+quietly turns "permit only what is listed" into "forbid only what is listed", and is reported.
+
+### Editor completion for the configuration file
+
+`archon init` also writes `.archon.schema.json` and points `$schema` at it, so an editor offers
+every rule id as a completion, shows its title and default severity on hover, and marks an unknown
+key or an invalid severity as you type — a shorter loop than any message the tool can print after
+a run.
+
+The schema is generated from the rules actually registered, including those from private packs, so
+it describes your installation rather than a fixed list. Regenerate it with `archon schema` after
+adding or upgrading a pack. A rule id the schema does not know stays permitted, so a configuration
+naming a pack that is not loadable on this machine is not marked as an error.
 
 ## Suppressing a finding
 
