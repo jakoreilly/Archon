@@ -1,0 +1,8 @@
+{
+  "rulePacks": [
+    "../ServiceConventionRules/bin/Debug/net10.0/ServiceConventionRules.dll"
+  ],
+  "rules": {
+    "SVC0001": "error"
+  }
+}

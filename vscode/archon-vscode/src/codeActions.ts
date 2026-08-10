@@ -31,7 +31,10 @@ export class PerfHintCodeActionProvider implements vscode.CodeActionProvider {
   }
 
   private actionFor(document: vscode.TextDocument, diagnostic: vscode.Diagnostic): vscode.CodeAction | undefined {
-    switch (diagnostic.code) {
+    // diagnostic.code is a plain rule id, or { value, target } once snippets.uriTemplate links it.
+    const code =
+      typeof diagnostic.code === 'object' && diagnostic.code !== null ? String(diagnostic.code.value) : diagnostic.code;
+    switch (code) {
       case COUNT_TO_ANY:
         return this.fixCountToAny(document, diagnostic);
       case REDUNDANT_MATERIALISATION:

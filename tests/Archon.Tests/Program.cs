@@ -1,5 +1,6 @@
 using Archon.Core.Configuration;
 using Archon.Core.Engine;
+using Archon.Core.Explanations;
 using Archon.Core.Findings;
 using Archon.Core.Insights;
 using Archon.Core.Rules;
@@ -7,6 +8,8 @@ using Archon.Core.Sources;
 using Archon.Rules;
 using Archon.Rules.CSharp;
 using Archon.Rules.Sql;
+using Archon.Tests.Corpus;
+using ServiceConventionRules;
 
 namespace Archon.Tests;
 
@@ -44,6 +47,11 @@ internal static class Program
         ScopeRules(harness);
         RegistryRules(harness);
         GlobRules(harness);
+        SnippetExtractionRules(harness);
+        SnippetCorpusRules(harness);
+        ServiceConventionRules(harness);
+        ConventionPackTier2Rules(harness);
+        SnippetCatalogRules(harness);
 
         return harness.Report();
     }
@@ -1398,5 +1406,443 @@ internal static class Program
         var single = new GlobMatcher(new[] { "src/*.cs" });
         harness.Check("a single star stays within one path segment", single.IsExcluded("src/A.cs"));
         harness.Check("a single star does not cross a separator", !single.IsExcluded("src/Nested/A.cs"));
+    }
+
+    /// <summary>
+    /// The extractor and wrapper are pure, so they are asserted here against short inline markdown
+    /// and code strings, exactly as every other rule is asserted against inline source. The last
+    /// three assertions are the regression that protects Phase 2's central claim: a bare method at
+    /// file scope is invisible to the method-shaped rules unless it is wrapped first.
+    /// </summary>
+    private static void SnippetExtractionRules(Harness harness)
+    {
+        harness.Group("Snippet extraction and wrapping");
+
+        IReadOnlyList<SnippetBlock> basic = SnippetExtractor.Extract(
+            "### PUB-X-01 · A title\n```csharp\nvar x = 1;\n```\n", "test.md");
+        harness.Check("extracts a snippet id and title",
+            basic.Count == 1 && basic[0].SnippetId == "PUB-X-01" && basic[0].Title == "A title");
+
+        IReadOnlyList<SnippetBlock> twoBlocks = SnippetExtractor.Extract(
+            "### PUB-X-01 · A title\n```csharp\nvar x = 1;\n```\n```csharp\nvar y = 2;\n```\n", "test.md");
+        harness.Check("numbers a snippet's second block",
+            twoBlocks.Count == 2 && twoBlocks[0].Ordinal == 0 && twoBlocks[1].Ordinal == 1);
+
+        IReadOnlyList<SnippetBlock> xmlBlock = SnippetExtractor.Extract(
+            "### PUB-X-01 · A title\n```xml\n<a/>\n```\n", "test.md");
+        harness.Check("records a non-C# language rather than dropping it",
+            xmlBlock.Count == 1 && xmlBlock[0].Language == "xml");
+
+        IReadOnlyList<SnippetBlock> unlabelled = SnippetExtractor.Extract(
+            "### PUB-X-01 · A title\n```\nplain text\n```\n", "test.md");
+        harness.Check("ignores an unlabelled fence's language",
+            unlabelled.Count == 1 && unlabelled[0].Language == "");
+
+        IReadOnlyList<SnippetBlock> notHeading = SnippetExtractor.Extract("### Adapting these snippets\n", "test.md");
+        harness.Equal("ignores a '###' line that is not a snippet heading", 0, notHeading.Count);
+
+        WrappedSnippet unit = SnippetWrapper.Wrap("public sealed class C { }");
+        harness.Check("classifies a type declaration as Unit",
+            unit.Shape == SnippetShape.Unit && unit.PrefixLines == 0);
+
+        WrappedSnippet member = SnippetWrapper.Wrap("public static void M(this int x) { }");
+        harness.Equal("classifies a bare extension method as Member", SnippetShape.Member, member.Shape);
+
+        WrappedSnippet statements = SnippetWrapper.Wrap("var x = 1;");
+        harness.Equal("classifies bare statements as Statements", SnippetShape.Statements, statements.Shape);
+
+        WrappedSnippet hoisted = SnippetWrapper.Wrap("using System;\npublic static void M() { }");
+        harness.Check("hoists leading usings above the wrapper",
+            hoisted.Shape == SnippetShape.Member && hoisted.Text.StartsWith("using System;", StringComparison.Ordinal));
+
+        WrappedSnippet usingStatement = SnippetWrapper.Wrap("using var r = new StringReader(s);");
+        harness.Check("does not hoist a using-statement",
+            usingStatement.Shape == SnippetShape.Statements && usingStatement.Text.Contains("using var r"));
+
+        const string asyncVoidBody = "public static async void M(string a) { await Task.Delay(1); }";
+        WrappedSnippet wrapped = SnippetWrapper.Wrap(asyncVoidBody);
+        var wrappedWorkspace = new TestWorkspace();
+        wrappedWorkspace.Add("wrapped.cs", wrapped.Text);
+        harness.Equal("wrapping makes a method visible to the method-shaped rules", 1,
+            wrappedWorkspace.Analyse().Findings.CountOf(AsyncSafetyRule.AsyncVoid));
+
+        var unwrappedWorkspace = new TestWorkspace();
+        unwrappedWorkspace.Add("unwrapped.cs", asyncVoidBody);
+        harness.Equal("the same text unwrapped is invisible", 0,
+            unwrappedWorkspace.Analyse().Findings.CountOf(AsyncSafetyRule.AsyncVoid));
+
+        harness.Check("nothing wraps to a syntax error",
+            unit.Shape != SnippetShape.Unparseable &&
+            member.Shape != SnippetShape.Unparseable &&
+            statements.Shape != SnippetShape.Unparseable &&
+            wrapped.Shape != SnippetShape.Unparseable);
+    }
+
+    /// <summary>
+    /// The only IO in the whole suite. Every vendored file is extracted, every C# block is
+    /// wrapped and added to one workspace, and the workspace is analysed once — so workspace-scope
+    /// rules (AR0002-AR0005, AR0040) see the corpus as one codebase, which is what makes the
+    /// registration snippets in 01-bootstrap-and-di.md interesting. AR0030/AR0031 (project scope)
+    /// and AR0040/AR0041 need .csproj files the corpus has none of, so they are silent by
+    /// construction rather than by agreement. The workspace also carries service.conventions
+    /// (Phase 3/4), so a rule change there that starts firing on idiomatic library code fails this
+    /// suite exactly as a built-in rule change would.
+    /// </summary>
+    private static void SnippetCorpusRules(Harness harness)
+    {
+        harness.Group("Snippet library corpus");
+
+        string? root = SnippetCorpusLocator.Locate();
+        if (root is null)
+        {
+            harness.Check("the snippet corpus is present at tests/fixtures/library", false);
+            return;
+        }
+
+        string[] files = Directory.GetFiles(root, "*.md");
+        harness.Equal("library files found", 11, files.Length);
+
+        var allBlocks = new List<SnippetBlock>();
+        foreach (string file in files.OrderBy(f => f, StringComparer.Ordinal))
+        {
+            allBlocks.AddRange(SnippetExtractor.Extract(File.ReadAllText(file), Path.GetFileName(file)));
+        }
+
+        harness.Equal("snippets extracted", 82, allBlocks.Select(b => b.SnippetId).Distinct().Count());
+
+        List<SnippetBlock> csharpBlocks = allBlocks.Where(b => b.Language == "csharp").ToList();
+        harness.Equal("C# blocks extracted", 83, csharpBlocks.Count);
+        harness.Equal("non-C# blocks skipped", 3, allBlocks.Count - csharpBlocks.Count);
+
+        var workspace = new TestWorkspace(new BuiltInRulePack(), new ServiceConventionRulePack());
+        var unparseable = new List<string>();
+        var statementShaped = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (SnippetBlock block in csharpBlocks)
+        {
+            WrappedSnippet wrapped = SnippetWrapper.Wrap(block.Text);
+            string key = $"{block.SnippetId}-{block.Ordinal}";
+            if (wrapped.Shape == SnippetShape.Unparseable)
+            {
+                unparseable.Add(key);
+                continue;
+            }
+            if (wrapped.Shape == SnippetShape.Statements)
+            {
+                statementShaped.Add(block.SnippetId);
+            }
+            workspace.Add($"{key}.cs", wrapped.Text);
+        }
+
+        string actualUnparseable = string.Join(",", unparseable.OrderBy(s => s, StringComparer.Ordinal));
+        string expectedUnparseable = string.Join(",", ExpectedCorpusFindings.Unparseable.OrderBy(s => s, StringComparer.Ordinal));
+        harness.Equal("blocks that no shape could parse", expectedUnparseable, actualUnparseable);
+
+        string actualStatementShaped = string.Join(",", statementShaped.OrderBy(s => s, StringComparer.Ordinal));
+        string expectedStatementShaped = string.Join(",", ExpectedCorpusFindings.StatementShaped.OrderBy(s => s, StringComparer.Ordinal));
+        harness.Equal("statement-shaped snippet ids", expectedStatementShaped, actualStatementShaped);
+
+        AnalysisResult result = workspace.Analyse();
+
+        var actualByBlock = new Dictionary<string, Dictionary<string, int>>(StringComparer.Ordinal);
+        foreach (Finding finding in result.Findings)
+        {
+            string key = Path.GetFileNameWithoutExtension(finding.FilePath);
+            if (!actualByBlock.TryGetValue(key, out Dictionary<string, int>? perRule))
+            {
+                perRule = new Dictionary<string, int>(StringComparer.Ordinal);
+                actualByBlock[key] = perRule;
+            }
+            perRule[finding.RuleId] = perRule.GetValueOrDefault(finding.RuleId) + 1;
+        }
+
+        var mismatches = new List<string>();
+        foreach (string key in actualByBlock.Keys.Union(ExpectedCorpusFindings.ByBlock.Keys))
+        {
+            Dictionary<string, int> actualForBlock = actualByBlock.GetValueOrDefault(key, new Dictionary<string, int>());
+            IReadOnlyDictionary<string, int> expectedForBlock = ExpectedCorpusFindings.ByBlock.GetValueOrDefault(
+                key, new Dictionary<string, int>());
+            foreach (string ruleId in actualForBlock.Keys.Union(expectedForBlock.Keys))
+            {
+                int actualCount = actualForBlock.GetValueOrDefault(ruleId);
+                int expectedCount = expectedForBlock.GetValueOrDefault(ruleId);
+                if (actualCount != expectedCount)
+                {
+                    mismatches.Add($"{key}:{ruleId} expected {expectedCount} actual {actualCount}");
+                }
+            }
+        }
+        harness.Check("per-block findings match the expected table" +
+            (mismatches.Count == 0 ? "" : $" ({string.Join("; ", mismatches)})"), mismatches.Count == 0);
+
+        int expectedTotal = ExpectedCorpusFindings.ByBlock.Values.Sum(d => d.Values.Sum());
+        harness.Equal("total findings across the corpus", expectedTotal, result.Findings.Count);
+    }
+
+    /// <summary>
+    /// The convention pack composes with the engine's own machinery — suppression, severity
+    /// overrides — rather than re-implementing either, which is what the last three assertions
+    /// prove.
+    /// </summary>
+    private static void ServiceConventionRules(Harness harness)
+    {
+        harness.Group("Service convention rules");
+
+        var now = new TestWorkspace(new ServiceConventionRulePack());
+        now.Add("a.cs", "class C { void M() { var x = DateTime.Now; } }");
+        harness.Equal("flags DateTime.Now", 1, now.Analyse().Findings.CountOf(AmbientEnvironmentRule.AmbientClock));
+
+        var offsetNow = new TestWorkspace(new ServiceConventionRulePack());
+        offsetNow.Add("a.cs", "class C { void M() { var x = DateTimeOffset.Now; } }");
+        harness.Equal("flags DateTimeOffset.Now", 1, offsetNow.Analyse().Findings.CountOf(AmbientEnvironmentRule.AmbientClock));
+
+        var today = new TestWorkspace(new ServiceConventionRulePack());
+        today.Add("a.cs", "class C { void M() { var x = DateTime.Today; } }");
+        harness.Equal("flags DateTime.Today", 1, today.Analyse().Findings.CountOf(AmbientEnvironmentRule.AmbientClock));
+
+        var qualified = new TestWorkspace(new ServiceConventionRulePack());
+        qualified.Add("a.cs", "class C { void M() { var x = System.DateTime.Now; } }");
+        harness.Equal("flags a fully-qualified System.DateTime.Now", 1,
+            qualified.Analyse().Findings.CountOf(AmbientEnvironmentRule.AmbientClock));
+
+        var utc = new TestWorkspace(new ServiceConventionRulePack());
+        utc.Add("a.cs", "class C { void M() { var a = DateTime.UtcNow; var b = DateTimeOffset.UtcNow; } }");
+        harness.Equal("ignores DateTime.UtcNow and DateTimeOffset.UtcNow", 0,
+            utc.Analyse().Findings.CountOf(AmbientEnvironmentRule.AmbientClock));
+
+        var offsetToday = new TestWorkspace(new ServiceConventionRulePack());
+        offsetToday.Add("a.cs", "class C { void M() { var x = DateTimeOffset.Today; } }");
+        harness.Equal("ignores DateTimeOffset.Today, which does not exist", 0,
+            offsetToday.Analyse().Findings.CountOf(AmbientEnvironmentRule.AmbientClock));
+
+        var instanceNow = new TestWorkspace(new ServiceConventionRulePack());
+        instanceNow.Add("a.cs", "class C { Clock clock; void M() { var x = clock.Now; } }");
+        harness.Equal("ignores an instance '.Now' on a field", 0,
+            instanceNow.Analyse().Findings.CountOf(AmbientEnvironmentRule.AmbientClock));
+
+        var culture = new TestWorkspace(new ServiceConventionRulePack());
+        culture.Add("a.cs", "class C { void M() { var a = CultureInfo.CurrentCulture; var b = CultureInfo.CurrentUICulture; } }");
+        harness.Equal("flags CultureInfo.CurrentCulture and CurrentUICulture", 2,
+            culture.Analyse().Findings.CountOf(AmbientEnvironmentRule.AmbientCulture));
+
+        var invariant = new TestWorkspace(new ServiceConventionRulePack());
+        invariant.Add("a.cs", "class C { void M() { var x = CultureInfo.InvariantCulture; } }");
+        harness.Equal("ignores CultureInfo.InvariantCulture", 0,
+            invariant.Analyse().Findings.CountOf(AmbientEnvironmentRule.AmbientCulture));
+
+        var cwd = new TestWorkspace(new ServiceConventionRulePack());
+        cwd.Add("a.cs", "class C { void M() { var x = Directory.GetCurrentDirectory(); } }");
+        harness.Equal("flags Directory.GetCurrentDirectory()", 1,
+            cwd.Analyse().Findings.CountOf(AmbientEnvironmentRule.AmbientWorkingDirectory));
+
+        // A marker suppresses its own line and the line below it (SuppressionIndex, exercised in
+        // "Suppression markers"), so the second finding sits two lines below the marker to prove
+        // only the marked occurrence is silenced.
+        const string suppressionSubject =
+            "class C { void M() { var a = DateTime.Now;\nvar spacer = 1;\nvar b = DateTime.Today; } }";
+
+        var suppressionBaseline = new TestWorkspace(new ServiceConventionRulePack());
+        suppressionBaseline.Add("a.cs", suppressionSubject);
+        int baselineCount = suppressionBaseline.Analyse().Findings.CountOf(AmbientEnvironmentRule.AmbientClock);
+
+        var suppressed = new TestWorkspace(new ServiceConventionRulePack());
+        suppressed.Add("a.cs", suppressionSubject.Replace(
+            "var a = DateTime.Now;", "var a = DateTime.Now; // archon-ignore[SVC0001]"));
+        int suppressedCount = suppressed.Analyse().Findings.CountOf(AmbientEnvironmentRule.AmbientClock);
+        harness.Equal("honours a suppression marker on SVC0001", baselineCount - 1, suppressedCount);
+
+        var off = new TestWorkspace(new ServiceConventionRulePack()).WithSeverity(AmbientEnvironmentRule.AmbientCulture, "off");
+        off.Add("a.cs", "class C { void M() { var x = CultureInfo.CurrentCulture; } }");
+        harness.Equal("honours 'SVC0002': 'off'", 0, off.Analyse().Findings.CountOf(AmbientEnvironmentRule.AmbientCulture));
+
+        var everything = new TestWorkspace(new ServiceConventionRulePack());
+        everything.Add("a.cs", """
+            class C
+            {
+                void M()
+                {
+                    var a = DateTime.Now;
+                    var b = DateTimeOffset.Now;
+                    var c = DateTime.Today;
+                    var d = System.DateTime.Now;
+                    var e = CultureInfo.CurrentCulture;
+                    var f = CultureInfo.CurrentUICulture;
+                    var g = Directory.GetCurrentDirectory();
+                }
+            }
+            """);
+        harness.Check("every reported id is declared",
+            everything.Analyse().Findings.All(f =>
+                f.RuleId is AmbientEnvironmentRule.AmbientClock or AmbientEnvironmentRule.AmbientCulture
+                    or AmbientEnvironmentRule.AmbientWorkingDirectory));
+    }
+
+    /// <summary>
+    /// SVC0021 (missing CancellationToken) was measured against the vendored corpus and
+    /// abandoned rather than shipped — see the phase report and the class doc comment on
+    /// AsyncContractRule for why — so only SVC0010 and SVC0020 have assertions here.
+    /// </summary>
+    private static void ConventionPackTier2Rules(Harness harness)
+    {
+        harness.Group("Convention pack tier 2");
+
+        var httpUrl = new TestWorkspace(new ServiceConventionRulePack());
+        httpUrl.Add("a.cs", "class C { string url = \"http://example.com/api\"; }");
+        harness.Equal("flags a hardcoded http:// URL in an initialiser", 1,
+            httpUrl.Analyse().Findings.CountOf(HardcodedEndpointRule.Id));
+
+        var httpsUrl = new TestWorkspace(new ServiceConventionRulePack());
+        httpsUrl.Add("a.cs", "class C { string url; void M() { url = \"https://example.com/api\"; } }");
+        harness.Equal("flags a hardcoded https:// URL in an assignment", 1,
+            httpsUrl.Analyse().Findings.CountOf(HardcodedEndpointRule.Id));
+
+        var uncPath = new TestWorkspace(new ServiceConventionRulePack());
+        uncPath.Add("a.cs", """class C { string share = "\\\\fileserver\\share"; } """);
+        harness.Equal("flags a UNC path", 1, uncPath.Analyse().Findings.CountOf(HardcodedEndpointRule.Id));
+
+        var ipv4 = new TestWorkspace(new ServiceConventionRulePack());
+        ipv4.Add("a.cs", "class C { string endpoint = \"10.0.0.5\"; }");
+        harness.Equal("flags an IPv4 literal", 1, ipv4.Analyse().Findings.CountOf(HardcodedEndpointRule.Id));
+
+        var specHost = new TestWorkspace(new ServiceConventionRulePack());
+        specHost.Add("a.cs", "class C { string url = \"http://tempuri.org/service\"; }");
+        harness.Equal("ignores a well-known specification host", 0,
+            specHost.Analyse().Findings.CountOf(HardcodedEndpointRule.Id));
+
+        var loopback = new TestWorkspace(new ServiceConventionRulePack());
+        loopback.Add("a.cs", "class C { string url = \"http://localhost:5000/api\"; }");
+        harness.Equal("ignores localhost", 0, loopback.Analyse().Findings.CountOf(HardcodedEndpointRule.Id));
+
+        var patternName = new TestWorkspace(new ServiceConventionRulePack());
+        patternName.Add("a.cs", "class C { string UrlFormat = \"http://example.com/{0}\"; }");
+        harness.Equal("ignores a literal whose name ends in 'Format'", 0,
+            patternName.Analyse().Findings.CountOf(HardcodedEndpointRule.Id));
+
+        var ordinary = new TestWorkspace(new ServiceConventionRulePack());
+        ordinary.Add("a.cs", "class C { string title = \"hello world\"; }");
+        harness.Equal("ignores a literal that is not a URL, UNC path or IPv4 address", 0,
+            ordinary.Analyse().Findings.CountOf(HardcodedEndpointRule.Id));
+
+        var additionalHost = new TestWorkspace(new ServiceConventionRulePack())
+            .WithOption(HardcodedEndpointRule.Id, """{ "additionalAllowedHosts": ["internal.example.com"] }""");
+        additionalHost.Add("a.cs", "class C { string url = \"https://internal.example.com/api\"; }");
+        harness.Equal("honours an additionalAllowedHosts option", 0,
+            additionalHost.Analyse().Findings.CountOf(HardcodedEndpointRule.Id));
+
+        var malformedOption = new TestWorkspace(new ServiceConventionRulePack())
+            .WithOption(HardcodedEndpointRule.Id, """{ "additionalAllowedHosts": "not-an-array" }""");
+        malformedOption.Add("a.cs", "class C { string url = \"https://example.com/api\"; }");
+        harness.Equal("a malformed option leaves the defaults rather than throwing", 1,
+            malformedOption.Analyse().Findings.CountOf(HardcodedEndpointRule.Id));
+
+        var svc0010Off = new TestWorkspace(new ServiceConventionRulePack()).WithSeverity(HardcodedEndpointRule.Id, "off");
+        svc0010Off.Add("a.cs", "class C { string url = \"https://example.com/api\"; }");
+        harness.Equal("honours 'SVC0010': 'off'", 0, svc0010Off.Analyse().Findings.CountOf(HardcodedEndpointRule.Id));
+
+        var svc0010Baseline = new TestWorkspace(new ServiceConventionRulePack());
+        svc0010Baseline.Add("a.cs", "class C { string a = \"https://example.com\";\nstring b = \"https://example.org\"; }");
+        int svc0010BaselineCount = svc0010Baseline.Analyse().Findings.CountOf(HardcodedEndpointRule.Id);
+
+        var svc0010Suppressed = new TestWorkspace(new ServiceConventionRulePack());
+        svc0010Suppressed.Add("a.cs",
+            "class C { string a = \"https://example.com\"; // archon-ignore[SVC0010]\nstring spacer = \"x\";\nstring b = \"https://example.org\"; }");
+        harness.Equal("honours a suppression marker on SVC0010", svc0010BaselineCount - 1,
+            svc0010Suppressed.Analyse().Findings.CountOf(HardcodedEndpointRule.Id));
+
+        var notAsyncNamed = new TestWorkspace(new ServiceConventionRulePack());
+        notAsyncNamed.Add("a.cs", "class C { async System.Threading.Tasks.Task Go() { await System.Threading.Tasks.Task.Delay(1); } }");
+        harness.Equal("flags a method whose body awaits but whose name does not end in 'Async'", 1,
+            notAsyncNamed.Analyse().Findings.CountOf(AsyncContractRule.MissingAsyncSuffix));
+
+        var alreadyAsync = new TestWorkspace(new ServiceConventionRulePack());
+        alreadyAsync.Add("a.cs", "class C { async System.Threading.Tasks.Task GoAsync() { await System.Threading.Tasks.Task.Delay(1); } }");
+        harness.Equal("ignores a method already named with the 'Async' suffix", 0,
+            alreadyAsync.Analyse().Findings.CountOf(AsyncContractRule.MissingAsyncSuffix));
+
+        var main = new TestWorkspace(new ServiceConventionRulePack());
+        main.Add("a.cs", "class C { static async System.Threading.Tasks.Task Main() { await System.Threading.Tasks.Task.Delay(1); } }");
+        harness.Equal("ignores 'Main'", 0, main.Analyse().Findings.CountOf(AsyncContractRule.MissingAsyncSuffix));
+
+        var overrideMethod = new TestWorkspace(new ServiceConventionRulePack());
+        overrideMethod.Add("a.cs",
+            "class Base { public virtual async System.Threading.Tasks.Task Go() { } } " +
+            "class C : Base { public override async System.Threading.Tasks.Task Go() { await System.Threading.Tasks.Task.Delay(1); } }");
+        harness.Equal("ignores an override", 0, overrideMethod.Analyse().Findings.CountOf(AsyncContractRule.MissingAsyncSuffix));
+
+        var interfaceMember = new TestWorkspace(new ServiceConventionRulePack());
+        interfaceMember.Add("a.cs",
+            "interface IHandler { async System.Threading.Tasks.Task Handle() { await System.Threading.Tasks.Task.Delay(1); } }");
+        harness.Equal("ignores a member of an interface named starting with 'I'", 0,
+            interfaceMember.Analyse().Findings.CountOf(AsyncContractRule.MissingAsyncSuffix));
+
+        var eventHandler = new TestWorkspace(new ServiceConventionRulePack());
+        eventHandler.Add("a.cs",
+            "class C { async System.Threading.Tasks.Task OnClick(object sender, System.EventArgs e) { await System.Threading.Tasks.Task.Delay(1); } }");
+        harness.Equal("ignores an event-handler shape", 0, eventHandler.Analyse().Findings.CountOf(AsyncContractRule.MissingAsyncSuffix));
+
+        var controllerAction = new TestWorkspace(new ServiceConventionRulePack());
+        controllerAction.Add("a.cs",
+            "class C { [HttpGet] public async System.Threading.Tasks.Task Get() { await System.Threading.Tasks.Task.Delay(1); } }");
+        harness.Equal("ignores an ASP.NET action method decorated with '[HttpGet]'", 0,
+            controllerAction.Analyse().Findings.CountOf(AsyncContractRule.MissingAsyncSuffix));
+
+        var testMethod = new TestWorkspace(new ServiceConventionRulePack());
+        testMethod.Add("a.cs",
+            "class C { [Test] public async System.Threading.Tasks.Task Widget_WhenValid_Succeeds() { await System.Threading.Tasks.Task.Delay(1); } }");
+        harness.Equal("ignores a method decorated with '[Test]'", 0,
+            testMethod.Analyse().Findings.CountOf(AsyncContractRule.MissingAsyncSuffix));
+
+        var svc0020Off = new TestWorkspace(new ServiceConventionRulePack()).WithSeverity(AsyncContractRule.MissingAsyncSuffix, "off");
+        svc0020Off.Add("a.cs", "class C { async System.Threading.Tasks.Task Go() { await System.Threading.Tasks.Task.Delay(1); } }");
+        harness.Equal("honours 'SVC0020': 'off'", 0, svc0020Off.Analyse().Findings.CountOf(AsyncContractRule.MissingAsyncSuffix));
+
+        var svc0020Suppressed = new TestWorkspace(new ServiceConventionRulePack());
+        svc0020Suppressed.Add("a.cs",
+            "class C { async System.Threading.Tasks.Task Go() { await System.Threading.Tasks.Task.Delay(1); } } // archon-ignore[SVC0020]");
+        harness.Equal("honours a suppression marker on SVC0020", 0,
+            svc0020Suppressed.Analyse().Findings.CountOf(AsyncContractRule.MissingAsyncSuffix));
+
+        var everythingTier2 = new TestWorkspace(new ServiceConventionRulePack());
+        everythingTier2.Add("a.cs", "class C { string url = \"http://example.com\"; async System.Threading.Tasks.Task Go() { await System.Threading.Tasks.Task.Delay(1); } }");
+        harness.Check("every reported id is declared",
+            everythingTier2.Analyse().Findings.All(f => f.RuleId is HardcodedEndpointRule.Id or AsyncContractRule.MissingAsyncSuffix));
+    }
+
+    /// <summary>
+    /// Detection never consults this catalog (constraint 2); these assertions exist only to catch
+    /// the static field initialisation order trap called out in Phase 5's GOTCHA and a typo in a
+    /// mapped key.
+    /// </summary>
+    private static void SnippetCatalogRules(Harness harness)
+    {
+        harness.Group("Snippet catalog");
+
+        string[] builtInMappedIds =
+        {
+            "AR0002", "AR0003", "AR0004", "AR0010", "AR0011", "AR0012", "AR0013", "AR0023", "SQ0001", "AR0030", "AR0073"
+        };
+        string[] conventionMappedIds = { "SVC0001", "SVC0003" };
+        string[] mappedIds = builtInMappedIds.Concat(conventionMappedIds).ToArray();
+
+        harness.Check("every mapped id resolves to a non-null pointer with a non-empty snippet id and reason",
+            mappedIds.All(id =>
+            {
+                SnippetPointer? pointer = SnippetCatalog.ForRule(id);
+                return pointer is not null && pointer.SnippetId.Length > 0 && pointer.Why.Length > 0;
+            }));
+
+        harness.Check("an unmapped id returns null", SnippetCatalog.ForRule("AR0060") is null);
+
+        harness.Check("resolves case-insensitively", SnippetCatalog.ForRule("ar0002") is not null);
+
+        var builtIn = new RuleRegistry();
+        builtIn.Add(new BuiltInRulePack());
+        harness.Check("every mapped built-in id is a registered rule id in BuiltInRulePack",
+            builtInMappedIds.All(id => builtIn.Find(id) is not null));
+
+        var conventions = new RuleRegistry();
+        conventions.Add(new ServiceConventionRulePack());
+        harness.Check("every mapped SVC id is a registered rule id from Phase 3",
+            conventionMappedIds.All(id => conventions.Find(id) is not null));
     }
 }

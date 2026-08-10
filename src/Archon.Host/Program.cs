@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Archon.Core.Configuration;
 using Archon.Core.Engine;
+using Archon.Core.Explanations;
 using Archon.Core.Findings;
 using Archon.Core.Insights;
 using Archon.Core.Output;
@@ -123,6 +124,7 @@ internal static class Program
         foreach (RegisteredRule registered in Session.Registry.Descriptors
                      .OrderBy(r => r.Descriptor.Id, StringComparer.Ordinal))
         {
+            SnippetPointer? pointer = SnippetCatalog.ForRule(registered.Descriptor.Id);
             rules.Add(new JsonObject
             {
                 ["id"] = registered.Descriptor.Id,
@@ -133,7 +135,10 @@ internal static class Program
                 ["language"] = registered.Rule.Language,
                 ["defaultSeverity"] = Reporter.Label(registered.Descriptor.DefaultSeverity),
                 ["severity"] = Reporter.Label(Session.Config.SeverityFor(registered.Descriptor)),
-                ["pack"] = registered.PackName
+                ["pack"] = registered.PackName,
+                ["snippetId"] = pointer?.SnippetId,
+                ["snippetTitle"] = pointer?.Title,
+                ["snippetWhy"] = pointer?.Why
             });
         }
         return rules;

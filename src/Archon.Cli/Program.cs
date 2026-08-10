@@ -1,5 +1,6 @@
 using Archon.Core.Configuration;
 using Archon.Core.Engine;
+using Archon.Core.Explanations;
 using Archon.Core.Findings;
 using Archon.Core.Output;
 using Archon.Core.Rules;
@@ -171,6 +172,14 @@ internal static class Program
         Console.WriteLine($"  pack       {registered.PackName}");
         Console.WriteLine();
         Console.WriteLine($"  {registered.Descriptor.Description}");
+
+        SnippetPointer? pointer = SnippetCatalog.ForRule(registered.Descriptor.Id);
+        if (pointer is not null)
+        {
+            Console.WriteLine();
+            Console.WriteLine($"  Approved pattern: {pointer.AsProse()}");
+        }
+
         Console.WriteLine();
         Console.WriteLine($"  Suppress one occurrence with: // archon-ignore[{registered.Descriptor.Id}] reason");
         Console.WriteLine($"  Disable entirely in .archon.json: \"rules\": {{ \"{registered.Descriptor.Id}\": \"off\" }}");

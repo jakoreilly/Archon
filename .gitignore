@@ -38,6 +38,11 @@ vscode/archon-vscode/host/
 !README.md
 !CHANGELOG.md
 
+# The vendored snippet library the corpus test analyses. Copied from the public
+# code-library; company-agnostic by construction. Re-sync by hand, then re-run the
+# corpus group — a changed snippet shows up as a changed finding count.
+!tests/fixtures/library/*.md
+
 # OS
 .DS_Store
 Thumbs.db

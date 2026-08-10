@@ -15,6 +15,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Archon.Core\Archon.Core.csproj" />
     <ProjectReference Include="..\..\src\Archon.Rules\Archon.Rules.csproj" />
+    <ProjectReference Include="..\..\samples\ServiceConventionRules\ServiceConventionRules.csproj" />
   </ItemGroup>
 
 </Project>

@@ -11,6 +11,9 @@ export interface RuleInfo {
   defaultSeverity: string;
   severity: string;
   pack: string;
+  snippetId?: string;
+  snippetTitle?: string;
+  snippetWhy?: string;
 }
 
 export interface FindingInfo {

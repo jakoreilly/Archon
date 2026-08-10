@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>ServiceConventionRules</AssemblyName>
+    <RootNamespace>ServiceConventionRules</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Private="false" keeps Archon.Core.dll out of this project's output.
+
+      The process loading this pack has already loaded Archon.Core. Shipping a second copy
+      beside the pack risks the runtime binding to that one instead, giving two IRulePack
+      types that are not the same type — at which case the pack loads without error and
+      contributes nothing, which is a thoroughly confusing way to spend an afternoon.
+    -->
+    <ProjectReference Include="..\..\src\Archon.Core\Archon.Core.csproj" Private="false" />
+  </ItemGroup>
+
+</Project>

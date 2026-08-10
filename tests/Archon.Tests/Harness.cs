@@ -65,11 +65,13 @@ internal sealed class TestWorkspace
 {
     private readonly Dictionary<string, string> _files = new(StringComparer.OrdinalIgnoreCase);
     private readonly string _root = Path.Combine(Path.GetTempPath(), "archon-tests");
+    private readonly IRulePack[] _packs;
 
     public ArchonConfig Config { get; }
 
-    public TestWorkspace()
+    public TestWorkspace(params IRulePack[] packs)
     {
+        _packs = packs.Length == 0 ? new IRulePack[] { new BuiltInRulePack() } : packs;
         Config = new ArchonConfig { WorkspaceRoot = _root };
     }
 
@@ -122,7 +124,10 @@ internal sealed class TestWorkspace
     private (AnalysisEngine Engine, WorkspaceModel Workspace) Build()
     {
         var registry = new RuleRegistry();
-        registry.Add(new BuiltInRulePack());
+        foreach (IRulePack pack in _packs)
+        {
+            registry.Add(pack);
+        }
 
         var cache = new SourceCache();
         var files = new List<SourceFile>();

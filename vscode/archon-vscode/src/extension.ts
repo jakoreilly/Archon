@@ -23,6 +23,7 @@ let impactLens: ImpactLensProvider;
 let history: HistoryHoverProvider;
 let rules: RuleInfo[] = [];
 let findingsByFile = new Map<string, FindingInfo[]>();
+let loggedInvalidSnippetsUriTemplate = false;
 
 /**
  * One pending analysis per file. A single shared timer would let an edit to one file cancel the
@@ -462,6 +463,7 @@ async function explainRule(node?: Node): Promise<void> {
   if (!rule) {
     return;
   }
+  const pointer = rule.snippetId ? { snippetId: rule.snippetId, title: rule.snippetTitle ?? '', why: rule.snippetWhy ?? '' } : undefined;
   const document = await vscode.workspace.openTextDocument({
     language: 'markdown',
     content: [
@@ -478,6 +480,19 @@ async function explainRule(node?: Node): Promise<void> {
       `| Effective severity | \`${rule.severity}\` |`,
       `| Rule pack | \`${rule.pack}\` |`,
       '',
+      ...(pointer
+        ? [
+            '## The approved pattern',
+            '',
+            `**${pointer.snippetId} — ${pointer.title}**`,
+            '',
+            pointer.why,
+            '',
+            'This is the shape this rule is asking for. It comes from the team snippet library, not from',
+            'the analyser: the rule detects, and the library says what to write instead.',
+            ''
+          ]
+        : []),
       '## Suppressing one occurrence',
       '',
       '```',
@@ -586,8 +601,30 @@ function toDiagnostic(finding: FindingInfo): vscode.Diagnostic {
   );
   const diagnostic = new vscode.Diagnostic(range, finding.message, toSeverity(finding.severity));
   diagnostic.source = 'archon';
-  diagnostic.code = finding.ruleId;
+  diagnostic.code = diagnosticCodeFor(finding.ruleId);
   return diagnostic;
+}
+
+/**
+ * A plain rule id, unless archon.snippets.uriTemplate is set and the rule maps to a library
+ * pattern — in which case the id becomes a link the Problems panel renders natively. An unmapped
+ * rule (23 of 36 ids) or an empty template renders exactly as it does today.
+ */
+function diagnosticCodeFor(ruleId: string): string | { value: string; target: vscode.Uri } {
+  const template = vscode.workspace.getConfiguration('archon').get<string>('snippets.uriTemplate', '');
+  const pointer = rules.find((rule) => rule.id === ruleId);
+  if (!template || !pointer?.snippetId) {
+    return ruleId;
+  }
+  try {
+    return { value: ruleId, target: vscode.Uri.parse(template.replace('{id}', pointer.snippetId), true) };
+  } catch {
+    if (!loggedInvalidSnippetsUriTemplate) {
+      loggedInvalidSnippetsUriTemplate = true;
+      log('snippets.uriTemplate is not a valid URI template; rule ids will not be linked.');
+    }
+    return ruleId;
+  }
 }
 
 function toSeverity(severity: string): vscode.DiagnosticSeverity {

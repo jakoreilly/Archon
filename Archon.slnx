@@ -10,5 +10,6 @@
   </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/AcmeRules/AcmeRules.csproj" />
+    <Project Path="samples/ServiceConventionRules/ServiceConventionRules.csproj" />
   </Folder>
 </Solution>

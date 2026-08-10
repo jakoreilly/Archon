@@ -237,6 +237,11 @@
           "default": "",
           "description": "Link template for an issue key, with {key} where the key goes. Empty shows the key without a link."
         },
+        "archon.snippets.uriTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Where the team snippet library lives, as a template containing {id} — for example https://wiki.example.com/snippets/{id} or file:///c:/snippets/{id}.md. Leave empty to show snippet names without linking them."
+        },
         "archon.focus.dimOpacity": {
           "type": "number",
           "default": 0.4,
