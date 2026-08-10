@@ -19,6 +19,14 @@ internal sealed class AnalysisSession
     private readonly List<string> _messages = new();
     private WorkspaceModel? _workspace;
 
+    /// <summary>
+    /// One entry per project directory, so a save-triggered pass costs a dictionary lookup once a
+    /// project has been discovered. Without this, every save under <c>analyseOn: type</c> paid for
+    /// a full recursive walk of the project's directory tree to find nothing that had changed since
+    /// the last save — the file set does not change just because a file's content did.
+    /// </summary>
+    private readonly Dictionary<string, WorkspaceModel> _projectWorkspaces = new(StringComparer.OrdinalIgnoreCase);
+
     private AnalysisSession(string root)
     {
         Root = root;
@@ -118,7 +126,34 @@ internal sealed class AnalysisSession
     /// than editing it. Content caches are left alone: a file that is still present has not
     /// changed just because its neighbour appeared.
     /// </summary>
-    public void InvalidateWorkspace() => _workspace = null;
+    public void InvalidateWorkspace()
+    {
+        _workspace = null;
+        _projectWorkspaces.Clear();
+    }
+
+    /// <summary>
+    /// The project owning a file, discovered once per project directory and held until a structural
+    /// change retires it. A rebuilt copy is never partially stale: any change that could alter which
+    /// files belong to the project also calls <see cref="InvalidateWorkspace"/>, which clears every
+    /// entry here alongside the whole-workspace model.
+    /// </summary>
+    public WorkspaceModel DiscoverProjectOf(string filePath)
+    {
+        string? projectDirectory = WorkspaceModel.FindProjectDirectory(filePath, Config.WorkspaceRoot);
+        if (projectDirectory is null)
+        {
+            return WorkspaceModel.ForSingleFile(Path.GetFullPath(filePath), Config.WorkspaceRoot);
+        }
+        if (_projectWorkspaces.TryGetValue(projectDirectory, out WorkspaceModel? cached))
+        {
+            return cached;
+        }
+        WorkspaceModel discovered = WorkspaceModel.DiscoverForProjectDirectory(
+            projectDirectory, Config.WorkspaceRoot, Config.EffectiveExcludes());
+        _projectWorkspaces[projectDirectory] = discovered;
+        return discovered;
+    }
 
     /// <summary>Registers unsaved editor text for a file, invalidating what was derived from it.</summary>
     public void SetText(string path, string text)

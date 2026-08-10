@@ -62,6 +62,15 @@
         "title": "Archon: Show Log"
       },
       {
+        "command": "archon.restart",
+        "title": "Archon: Restart Analysis Process",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "archon.openMenu",
+        "title": "Archon: Open Menu"
+      },
+      {
         "command": "archon.enableRule",
         "title": "Archon: Enable Rule",
         "icon": "$(circle-large-outline)"
@@ -103,6 +112,10 @@
       {
         "command": "archon.showCallers",
         "title": "Archon: Show Callers"
+      },
+      {
+        "command": "archon.setSeverityForRule",
+        "title": "Archon: Set Severity For Rule"
       }
     ],
     "keybindings": [
@@ -133,6 +146,14 @@
         },
         {
           "command": "archon.showCallers",
+          "when": "false"
+        },
+        {
+          "command": "archon.setSeverityForRule",
+          "when": "false"
+        },
+        {
+          "command": "archon.openMenu",
           "when": "false"
         }
       ],

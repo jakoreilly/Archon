@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { ruleIdOf } from './diagnosticCode';
 
 const COUNT_TO_ANY = 'AR0020';
 const REDUNDANT_MATERIALISATION = 'AR0022';
@@ -31,10 +32,7 @@ export class PerfHintCodeActionProvider implements vscode.CodeActionProvider {
   }
 
   private actionFor(document: vscode.TextDocument, diagnostic: vscode.Diagnostic): vscode.CodeAction | undefined {
-    // diagnostic.code is a plain rule id, or { value, target } once snippets.uriTemplate links it.
-    const code =
-      typeof diagnostic.code === 'object' && diagnostic.code !== null ? String(diagnostic.code.value) : diagnostic.code;
-    switch (code) {
+    switch (ruleIdOf(diagnostic)) {
       case COUNT_TO_ANY:
         return this.fixCountToAny(document, diagnostic);
       case REDUNDANT_MATERIALISATION:

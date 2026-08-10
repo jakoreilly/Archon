@@ -1,5 +1,6 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { upsertRuleSeverity } from './archonConfigEdit';
 import { AnalysisReply, ArchonClient, FindingInfo, MethodImpactInfo, RuleInfo } from './client';
 import { PerfHintCodeActionProvider } from './codeActions';
 import { DiffHunk } from './diff';
@@ -8,9 +9,11 @@ import { forgetRepositoryRoots } from './git';
 import { HistoryHoverProvider } from './historyHover';
 import { ImpactLensProvider, showCallers } from './impactLens';
 import { Node, RuleNode, RulesTreeProvider } from './rulesTree';
+import { SuppressionCodeActionProvider } from './suppressionActions';
 
 const SUPPORTED_LANGUAGES = ['csharp', 'sql'];
 const SEVERITY_CHOICES = ['error', 'warning', 'information', 'hint', 'off'];
+const CONFIG_FILE_NAME = '.archon.json';
 
 let client: ArchonClient | undefined;
 let diagnostics: vscode.DiagnosticCollection;
@@ -24,6 +27,29 @@ let history: HistoryHoverProvider;
 let rules: RuleInfo[] = [];
 let findingsByFile = new Map<string, FindingInfo[]>();
 let loggedInvalidSnippetsUriTemplate = false;
+
+/** Where the host found `.archon.json`, or null until a config-carrying reply has been seen. */
+let configPath: string | null = null;
+
+/** Captured at activation so a command started well after startup — restart — can call it again. */
+let extensionContext: vscode.ExtensionContext;
+
+interface FileAnalysisState {
+  version: number;
+  timestamp: number;
+  elapsedMilliseconds: number;
+}
+
+/**
+ * The last analysis result for a file, keyed by path, so the status bar can tell "clean" apart
+ * from "never looked at" for whichever file is active. Compared against the document's own
+ * version rather than trusted forever, since an edit since the last pass means this no longer
+ * describes what is on screen.
+ */
+const analysedFiles = new Map<string, FileAnalysisState>();
+
+/** Requests in flight, so the status bar can show a spinner without a boolean racing itself when saves overlap. */
+let pendingAnalyses = 0;
 
 /**
  * One pending analysis per file. A single shared timer would let an edit to one file cancel the
@@ -44,10 +70,10 @@ let pendingStructural = false;
 let invalidationTimer: NodeJS.Timeout | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  extensionContext = context;
   output = vscode.window.createOutputChannel('Archon');
   diagnostics = vscode.languages.createDiagnosticCollection('archon');
   status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-  status.command = 'archon.showOutput';
   reviewStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
   reviewStatus.command = 'archon.toggleReviewMode';
   tree = new RulesTreeProvider();
@@ -71,6 +97,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       new PerfHintCodeActionProvider(),
       { providedCodeActionKinds: PerfHintCodeActionProvider.providedCodeActionKinds }
     ),
+    vscode.languages.registerCodeActionsProvider(
+      [
+        { language: 'csharp', scheme: 'file' },
+        { language: 'sql', scheme: 'file' }
+      ],
+      new SuppressionCodeActionProvider(),
+      { providedCodeActionKinds: SuppressionCodeActionProvider.providedCodeActionKinds }
+    ),
     vscode.commands.registerCommand('archon.analyzeWorkspace', analyzeWorkspace),
     vscode.commands.registerCommand('archon.analyzeActiveFile', () => {
       const editor = vscode.window.activeTextEditor;
@@ -81,9 +115,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('archon.writeBaseline', writeBaseline),
     vscode.commands.registerCommand('archon.reload', reload),
     vscode.commands.registerCommand('archon.showOutput', () => output.show(true)),
+    vscode.commands.registerCommand('archon.openMenu', openMenu),
+    vscode.commands.registerCommand('archon.restart', () => restart()),
     vscode.commands.registerCommand('archon.enableRule', (node?: Node) => changeSeverity(node, undefined)),
     vscode.commands.registerCommand('archon.disableRule', (node?: Node) => changeSeverity(node, 'off')),
     vscode.commands.registerCommand('archon.setRuleSeverity', (node?: Node) => changeSeverity(node)),
+    vscode.commands.registerCommand('archon.setSeverityForRule', (ruleId: string, severity?: string) =>
+      setSeverityForRule(ruleId, severity)
+    ),
     vscode.commands.registerCommand('archon.explainRule', explainRule),
     vscode.commands.registerCommand('archon.toggleReviewMode', () => focus.toggle()),
     vscode.commands.registerCommand('archon.setReviewBaseRef', setReviewBaseRef),
@@ -108,6 +147,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.workspace.onDidCloseTextDocument((document) => {
       diagnostics.delete(document.uri);
       findingsByFile.delete(document.uri.fsPath);
+      analysedFiles.delete(document.uri.fsPath);
       history.forget(document.uri);
       focus.forget(document.uri);
       impactLens.forget(document.uri);
@@ -122,10 +162,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         focus.paintVisible(editor);
       }
     }),
-    vscode.window.onDidChangeActiveTextEditor(() => updateReviewStatus()),
+    vscode.window.onDidChangeActiveTextEditor(() => {
+      updateReviewStatus();
+      refreshStatusBar();
+    }),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration('archon.hostPath')) {
-        void reload();
+        // A restart, not a reload: the path names a different executable, so the running process
+        // — started from the old path — has nothing to reload that would pick the new one up.
+        void restart();
       }
       if (event.affectsConfiguration('archon.impact')) {
         impactLens.invalidateAll();
@@ -239,7 +284,7 @@ async function startHost(context: vscode.ExtensionContext): Promise<void> {
   const folders = vscode.workspace.workspaceFolders ?? [];
   const root = folders[0]?.uri.fsPath;
   if (!root) {
-    setStatus('$(circle-slash) Archon: no folder open');
+    setStatus('$(circle-slash) Archon: no folder open', 'archon.showOutput', 'Open a folder for Archon to analyse.');
     return;
   }
   if (folders.length > 1) {
@@ -253,13 +298,14 @@ async function startHost(context: vscode.ExtensionContext): Promise<void> {
 
   const hostPath = resolveHostPath(context);
   client = new ArchonClient(hostPath, (message) => log(message), () => {
-    setStatus('$(error) Archon: process stopped');
+    refreshStatusBar();
   });
 
   try {
     client.start();
     const reply = await client.initialize(root);
     rules = reply.rules;
+    configPath = reply.configPath;
     tree.setRules(rules);
 
     log(`initialised at ${reply.root}`);
@@ -268,7 +314,7 @@ async function startHost(context: vscode.ExtensionContext): Promise<void> {
     for (const message of reply.messages) {
       log(message);
     }
-    setStatus(`$(shield) Archon: ${rules.filter((r) => r.severity !== 'off').length}/${rules.length} rules`);
+    refreshStatusBar();
 
     if (vscode.workspace.getConfiguration('archon').get<boolean>('analyseWorkspaceOnStartup', false)) {
       await analyzeWorkspace();
@@ -276,10 +322,30 @@ async function startHost(context: vscode.ExtensionContext): Promise<void> {
       await analyzeDocument(vscode.window.activeTextEditor.document);
     }
   } catch (error) {
-    setStatus('$(error) Archon: failed to start');
+    setStatus(
+      '$(error) Archon: failed to start — select to restart',
+      'archon.restart',
+      'Could not start the analysis process. Select to try again, or open the log for details.'
+    );
     log(`could not start the analysis process at ${hostPath}: ${describe(error)}`);
     log('Check that the .NET runtime is installed and on PATH, or set archon.hostPath.');
   }
+}
+
+/**
+ * Stops the current process, if any, and starts a fresh one against the same workspace. The only
+ * way to recover from an unexpected exit, or to pick up a changed `archon.hostPath`: reloading
+ * configuration asks the running process to re-read its settings, but a process started from the
+ * old path has no way to relaunch itself from a new one.
+ */
+async function restart(): Promise<void> {
+  log('restarting the analysis process.');
+  const previous = client;
+  client = undefined;
+  if (previous) {
+    await previous.dispose();
+  }
+  await startHost(extensionContext);
 }
 
 function isSupported(document: vscode.TextDocument): boolean {
@@ -343,15 +409,23 @@ async function analyzeDocument(document: vscode.TextDocument): Promise<void> {
   if (!client?.isRunning || !isSupported(document)) {
     return;
   }
+  beginAnalysing();
   try {
     const reply = await client.analyzeFile(
       document.uri.fsPath,
       document.isDirty ? document.getText() : undefined
     );
     applyForFile(document.uri, reply);
+    analysedFiles.set(document.uri.fsPath, {
+      version: document.version,
+      timestamp: Date.now(),
+      elapsedMilliseconds: reply.elapsedMilliseconds
+    });
     reportSkipped(reply);
   } catch (error) {
     log(`could not analyse ${document.uri.fsPath}: ${describe(error)}`);
+  } finally {
+    endAnalysing();
   }
 }
 
@@ -359,12 +433,14 @@ async function analyzeWorkspace(): Promise<void> {
   if (!client?.isRunning) {
     return;
   }
+  beginAnalysing();
   await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Window, title: 'Archon: analysing workspace' },
     async () => {
       try {
         const reply = await client!.analyzeWorkspace();
         applyForWorkspace(reply);
+        markCleanVisibleEditorsAnalysed(reply.elapsedMilliseconds);
         reportSkipped(reply);
         log(
           `workspace pass: ${reply.findings.length} finding(s) across ${reply.filesAnalysed} file(s) in ${reply.elapsedMilliseconds} ms` +
@@ -372,9 +448,36 @@ async function analyzeWorkspace(): Promise<void> {
         );
       } catch (error) {
         log(`workspace analysis failed: ${describe(error)}`);
+      } finally {
+        endAnalysing();
       }
     }
   );
+}
+
+/**
+ * After a workspace pass, a currently visible editor with no unsaved changes was analysed at
+ * exactly its current content — the pass reads from disk, which for a clean document is the same
+ * thing. A dirty editor is left alone: the pass read what was on disk, not the buffer on screen,
+ * so marking it analysed would claim a result for content that was never looked at.
+ */
+function markCleanVisibleEditorsAnalysed(elapsedMilliseconds: number): void {
+  const timestamp = Date.now();
+  for (const editor of vscode.window.visibleTextEditors) {
+    if (!editor.document.isDirty && isSupported(editor.document)) {
+      analysedFiles.set(editor.document.uri.fsPath, { version: editor.document.version, timestamp, elapsedMilliseconds });
+    }
+  }
+}
+
+function beginAnalysing(): void {
+  pendingAnalyses++;
+  refreshStatusBar();
+}
+
+function endAnalysing(): void {
+  pendingAnalyses = Math.max(0, pendingAnalyses - 1);
+  refreshStatusBar();
 }
 
 async function writeBaseline(): Promise<void> {
@@ -406,11 +509,12 @@ async function reload(): Promise<void> {
   try {
     const reply = await client.reloadConfig();
     rules = reply.rules;
+    configPath = reply.configPath;
     tree.setRules(rules);
     for (const message of reply.messages) {
       log(message);
     }
-    setStatus(`$(shield) Archon: ${rules.filter((r) => r.severity !== 'off').length}/${rules.length} rules`);
+    refreshStatusBar();
     log('configuration and rules reloaded.');
     if (vscode.window.activeTextEditor) {
       await analyzeDocument(vscode.window.activeTextEditor.document);
@@ -442,20 +546,103 @@ async function changeSeverity(node: Node | undefined, severity?: string): Promis
   if (!target) {
     return;
   }
+  await applySeverity(rule, target, /* persist */ false);
+}
+
+/**
+ * The severity quick fixes on a finding itself: the rule is already known, so only the severity
+ * — supplied directly for "disable", or picked for "set severity…" — needs resolving. Distinct
+ * from {@link changeSeverity}, which the rules tree drives and which resolves the rule too.
+ */
+async function setSeverityForRule(ruleId: string, severity?: string): Promise<void> {
+  if (!client?.isRunning) {
+    return;
+  }
+  const rule = rules.find((r) => r.id === ruleId);
+  if (!rule) {
+    return;
+  }
+  const target =
+    severity ??
+    (await vscode.window.showQuickPick(SEVERITY_CHOICES, {
+      title: `Severity for ${rule.id} — ${rule.title}`,
+      placeHolder: `currently ${rule.severity}`
+    }));
+  if (!target) {
+    return;
+  }
+  await applySeverity(rule, target, /* persist */ true);
+}
+
+/**
+ * Applies a severity to the running session and, when asked, writes it into `.archon.json` too —
+ * closing the loop the tree's own severity picker leaves open today, where a change applies only
+ * for the session and the log line just tells you to go and edit the file yourself.
+ */
+async function applySeverity(rule: RuleInfo, severity: string, persist: boolean): Promise<void> {
+  if (!client?.isRunning) {
+    return;
+  }
+  if (persist && !(await persistSeverity(rule.id, severity))) {
+    vscode.window.showWarningMessage(
+      `Archon could not safely edit ${CONFIG_FILE_NAME} for ${rule.id} — its shape wasn't one this edit trusts itself with. ` +
+        `Add "${rule.id}": "${severity}" under "rules" by hand.`
+    );
+    persist = false;
+  }
 
   try {
-    await client.setSeverity(rule.id, target);
+    await client.setSeverity(rule.id, severity);
     const updated = await client.listRules();
     rules = updated.rules;
     tree.setRules(rules);
-    setStatus(`$(shield) Archon: ${rules.filter((r) => r.severity !== 'off').length}/${rules.length} rules`);
-    log(`${rule.id} set to ${target} for this session. Add it to .archon.json to make it permanent.`);
+    refreshStatusBar();
+    log(
+      persist
+        ? `${rule.id} set to ${severity} and written to ${configPath ?? CONFIG_FILE_NAME}.`
+        : `${rule.id} set to ${severity} for this session. Add it to .archon.json to make it permanent.`
+    );
     if (vscode.window.activeTextEditor) {
       await analyzeDocument(vscode.window.activeTextEditor.document);
     }
   } catch (error) {
     log(`could not change ${rule.id}: ${describe(error)}`);
   }
+}
+
+/**
+ * Writes a rule's severity into `.archon.json`, creating it at the workspace root when the host
+ * found none. Edits the smallest span of text that has to change rather than reparsing and
+ * rewriting the whole document, so a comment or an unrelated key survives untouched. Returns
+ * `false` when the existing file's shape cannot be trusted enough to edit — a non-object root, or
+ * a `rules` value that is not itself an object — leaving the file untouched either way.
+ */
+async function persistSeverity(ruleId: string, severity: string): Promise<boolean> {
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (!folder) {
+    return false;
+  }
+  const targetPath = configPath ?? path.join(folder.uri.fsPath, CONFIG_FILE_NAME);
+  const uri = vscode.Uri.file(targetPath);
+
+  let current: string | undefined;
+  try {
+    current = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
+  } catch {
+    current = undefined;
+  }
+
+  const updated =
+    current === undefined
+      ? `{\n  "rules": {\n    "${ruleId}": "${severity}"\n  }\n}\n`
+      : upsertRuleSeverity(current, ruleId, severity);
+  if (updated === undefined) {
+    return false;
+  }
+
+  await vscode.workspace.fs.writeFile(uri, Buffer.from(updated, 'utf8'));
+  configPath ??= targetPath;
+  return true;
 }
 
 async function explainRule(node?: Node): Promise<void> {
@@ -592,6 +779,14 @@ function updateCounts(findings: FindingInfo[]): void {
   tree.setFindingCounts(counts);
 }
 
+/**
+ * Kinds a rule has already proven dead rather than merely suspect — the difference between "this
+ * parameter is never read" and "this call might be worth a second look". Mapped to VS Code's own
+ * tag for the concept, which renders as faded text in the editor with no UI of Archon's own to
+ * build or maintain.
+ */
+const UNNECESSARY_KINDS = new Set(['UnusedParameter', 'UnusedLocalVariable']);
+
 function toDiagnostic(finding: FindingInfo): vscode.Diagnostic {
   const range = new vscode.Range(
     Math.max(0, finding.startLine),
@@ -602,6 +797,9 @@ function toDiagnostic(finding: FindingInfo): vscode.Diagnostic {
   const diagnostic = new vscode.Diagnostic(range, finding.message, toSeverity(finding.severity));
   diagnostic.source = 'archon';
   diagnostic.code = diagnosticCodeFor(finding.ruleId);
+  if (finding.kind && UNNECESSARY_KINDS.has(finding.kind)) {
+    diagnostic.tags = [vscode.DiagnosticTag.Unnecessary];
+  }
   return diagnostic;
 }
 
@@ -649,9 +847,149 @@ function reportSkipped(reply: AnalysisReply): void {
   }
 }
 
-function setStatus(text: string): void {
+/**
+ * Reflects what Archon is doing right now, not just how it is configured: a rule count is the
+ * same whether the active file was analysed a moment ago or has never been looked at, and those
+ * two states used to render identically. Clicking always opens the same menu, except while the
+ * process is down, when it restarts it directly — the one action worth reaching in a single click.
+ */
+function refreshStatusBar(): void {
+  if (!client?.isRunning) {
+    setStatus('$(error) Archon: stopped — select to restart', 'archon.restart', 'The analysis process is not running. Select to restart it.');
+    return;
+  }
+  if (pendingAnalyses > 0) {
+    setStatus('$(sync~spin) Archon: analysing…');
+    return;
+  }
+
+  const enabled = rules.filter((r) => r.severity !== 'off').length;
+  const ruleSummary = `${enabled}/${rules.length} rules enabled`;
+
+  const editor = vscode.window.activeTextEditor;
+  if (!editor || !isSupported(editor.document)) {
+    setStatus(`$(shield) Archon: ${enabled}/${rules.length} rules`, undefined, `${ruleSummary} · select for more actions`);
+    return;
+  }
+
+  const filePath = editor.document.uri.fsPath;
+  const name = path.basename(filePath);
+  const state = analysedFiles.get(filePath);
+
+  if (!state || state.version !== editor.document.version) {
+    setStatus(
+      '$(circle-outline) Archon: not analysed',
+      undefined,
+      `No result yet for the current content of **${name}**.\n\n${ruleSummary} · select for more actions`
+    );
+    return;
+  }
+
+  const { icon, text } = summariseFindings(findingsByFile.get(filePath) ?? []);
+  setStatus(
+    `$(${icon}) Archon: ${text}`,
+    undefined,
+    new vscode.MarkdownString(
+      `**${name}** — ${text}\n\n` +
+        `Analysed in ${state.elapsedMilliseconds} ms at ${new Date(state.timestamp).toLocaleTimeString()}\n\n` +
+        `${ruleSummary} · select for more actions`
+    )
+  );
+}
+
+/**
+ * The worst severity present decides the icon; every severity present is named, so "1 error" does
+ * not hide the three warnings sitting beside it.
+ */
+function summariseFindings(findings: FindingInfo[]): { icon: string; text: string } {
+  if (findings.length === 0) {
+    return { icon: 'check', text: 'clean' };
+  }
+  const bySeverity: { severity: string; icon: string; noun: string }[] = [
+    { severity: 'error', icon: 'error', noun: 'error' },
+    { severity: 'warning', icon: 'warning', noun: 'warning' },
+    { severity: 'information', icon: 'info', noun: 'info' },
+    { severity: 'hint', icon: 'info', noun: 'hint' }
+  ];
+  const counts = new Map<string, number>();
+  for (const finding of findings) {
+    counts.set(finding.severity, (counts.get(finding.severity) ?? 0) + 1);
+  }
+  const present = bySeverity.filter((entry) => counts.has(entry.severity));
+  const text = present.map((entry) => `${counts.get(entry.severity)} ${plural(entry.noun, counts.get(entry.severity)!)}`).join(', ');
+  return { icon: present[0]?.icon ?? 'info', text };
+}
+
+function plural(word: string, count: number): string {
+  return count === 1 ? word : `${word}s`;
+}
+
+/**
+ * The menu behind the status bar item — the answer to "must everything go through the command
+ * palette". Every entry here already exists as a command; this just puts the ones reached for
+ * daily, rather than occasionally, behind a single click.
+ */
+async function openMenu(): Promise<void> {
+  interface MenuItem extends vscode.QuickPickItem {
+    run: () => void | Thenable<void>;
+  }
+
+  if (!client?.isRunning) {
+    const picked = await vscode.window.showQuickPick<MenuItem>(
+      [
+        { label: '$(debug-restart) Restart Analysis Process', run: () => restart() },
+        { label: '$(output) Show Log', run: () => output.show(true) }
+      ],
+      { title: 'Archon — process not running' }
+    );
+    await picked?.run();
+    return;
+  }
+
+  const trigger = analysisTrigger();
+  const items: MenuItem[] = [
+    {
+      label: '$(search) Analyse Active File',
+      run: () => {
+        const editor = vscode.window.activeTextEditor;
+        if (editor) {
+          void analyzeDocument(editor.document);
+        }
+      }
+    },
+    { label: '$(search-fuzzy) Analyse Whole Workspace', run: analyzeWorkspace },
+    {
+      label: focus.isActive ? '$(git-compare) Leave Review Mode' : '$(git-compare) Review Changes',
+      description: focus.isActive ? focus.describe() : 'dim everything unchanged against a base ref',
+      run: () => focus.toggle()
+    },
+    {
+      label: trigger === 'type' ? '$(pass-filled) Analyse While Typing: On' : '$(circle-large-outline) Analyse While Typing: Off',
+      description: 'archon.analyseOn',
+      run: () =>
+        vscode.workspace
+          .getConfiguration('archon')
+          .update('analyseOn', trigger === 'type' ? 'save' : 'type', vscode.ConfigurationTarget.Workspace)
+    },
+    { label: '$(list-tree) Open Rules View', run: () => vscode.commands.executeCommand('archon.rules.focus') },
+    { label: '$(pass) Accept Current Findings As Baseline', run: writeBaseline },
+    { label: '$(refresh) Reload Configuration And Rules', run: reload },
+    { label: '$(debug-restart) Restart Analysis Process', run: () => restart() },
+    { label: '$(output) Show Log', run: () => output.show(true) }
+  ];
+
+  const picked = await vscode.window.showQuickPick(items, { title: 'Archon' });
+  await picked?.run();
+}
+
+function setStatus(
+  text: string,
+  command: string = 'archon.openMenu',
+  tooltip: string | vscode.MarkdownString = 'Archon — select for more actions'
+): void {
   status.text = text;
-  status.tooltip = 'Archon — select to open the log';
+  status.tooltip = tooltip;
+  status.command = command;
   status.show();
 }
 

@@ -1,3 +1,4 @@
+import { upsertRuleSeverity } from '../archonConfigEdit';
 import { changedLines, parseDiffHunks } from '../diff';
 import { describeAge, escapeMarkdown, findIssueKey, issueUrl, parseBlame, splitMessage } from '../history';
 
@@ -81,6 +82,59 @@ equal('days are preferred over hours', describeAge(1700000000 - 60 * 60 * 24 * 3
 equal('years are the largest unit', describeAge(1700000000 - 60 * 60 * 24 * 800, now), '2 years ago');
 equal('a change in the same moment reads as such', describeAge(1700000000, now), 'just now');
 equal('a clock skewed into the future does not report a negative age', describeAge(1700000000 + 5000, now), 'just now');
+
+function parsed(text: string): Record<string, unknown> {
+  return JSON.parse(text.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '')) as Record<string, unknown>;
+}
+
+const bareObject = parsed(upsertRuleSeverity('{}', 'AR0002', 'off') ?? '{}');
+equal('adds a rules block to a bare object', (bareObject.rules as Record<string, string>).AR0002, 'off');
+
+const withSibling = parsed(upsertRuleSeverity('{\n  "exclude": []\n}', 'AR0002', 'off') ?? '{}');
+equal('adds a rules block alongside an existing key', (withSibling.rules as Record<string, string>).AR0002, 'off');
+equal('the existing key survives', JSON.stringify(withSibling.exclude), '[]');
+
+const emptyRules = parsed(upsertRuleSeverity('{\n  "rules": {}\n}', 'AR0002', 'off') ?? '{}');
+equal('adds a rule to an empty rules object', (emptyRules.rules as Record<string, string>).AR0002, 'off');
+
+const alongsideOther = parsed(
+  upsertRuleSeverity('{\n  "rules": {\n    "AR0001": "error"\n  }\n}', 'AR0002', 'off') ?? '{}'
+);
+equal('adds a rule alongside an existing one', (alongsideOther.rules as Record<string, string>).AR0002, 'off');
+equal('the other rule keeps its severity', (alongsideOther.rules as Record<string, string>).AR0001, 'error');
+
+const replaced = parsed(upsertRuleSeverity('{\n  "rules": {\n    "AR0002": "warning"\n  }\n}', 'AR0002', 'off') ?? '{}');
+equal('replaces an existing rule severity in place', (replaced.rules as Record<string, string>).AR0002, 'off');
+
+const caseInsensitive = parsed(
+  upsertRuleSeverity('{\n  "rules": {\n    "ar0002": "warning"\n  }\n}', 'AR0002', 'off') ?? '{}'
+);
+equal(
+  'matches an existing rule id case-insensitively rather than adding a duplicate',
+  (caseInsensitive.rules as Record<string, string>).ar0002,
+  'off'
+);
+equal('no second key is added for the same id', Object.keys(caseInsensitive.rules as object).length, 1);
+
+const keptSibling = parsed(
+  upsertRuleSeverity('{\n  "rules": {\n    "AR0001": "error",\n    "AR0002": "warning"\n  }\n}', 'AR0002', 'off') ?? '{}'
+);
+equal('leaves a sibling key untouched', (keptSibling.rules as Record<string, string>).AR0001, 'error');
+equal('and updates the target key', (keptSibling.rules as Record<string, string>).AR0002, 'off');
+
+equal(
+  'a comment elsewhere in the file survives the edit',
+  (upsertRuleSeverity('{\n  // kept\n  "rules": {\n    "AR0001": "error"\n  }\n}', 'AR0002', 'off') ?? '').includes('// kept'),
+  true
+);
+
+equal('a non-object root cannot be edited', upsertRuleSeverity('[]', 'AR0002', 'off'), undefined);
+equal(
+  'a rules value that is not an object cannot be edited',
+  upsertRuleSeverity('{ "rules": "off" }', 'AR0002', 'off'),
+  undefined
+);
+equal('an unterminated object cannot be edited', upsertRuleSeverity('{ "rules": {', 'AR0002', 'off'), undefined);
 
 if (failures.length > 0) {
   console.error(`${failures.length} of ${checks} assertions failed:`);

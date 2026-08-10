@@ -1,3 +1,4 @@
+using System.IO.Enumeration;
 using System.Text.RegularExpressions;
 
 namespace Archon.Core.Sources;
@@ -61,7 +62,7 @@ public sealed class WorkspaceModel
             // Source files and project files are collected in a single walk. Enumerating the tree
             // twice doubles the cost of discovery, and discovery is on the path of every request
             // that needs the file set.
-            foreach (string path in EnumerateFiles(fullRoot))
+            foreach (string path in EnumerateFiles(fullRoot, matcher))
             {
                 bool isProject = path.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase);
                 string? language = LanguageOf(path);
@@ -92,7 +93,7 @@ public sealed class WorkspaceModel
                 files.Add(new SourceFile(fullRoot, language));
             }
             fullRoot = Path.GetDirectoryName(fullRoot) ?? fullRoot;
-            projectFiles.AddRange(EnumerateFiles(fullRoot)
+            projectFiles.AddRange(EnumerateFiles(fullRoot, matcher)
                 .Where(p => p.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
                 .Where(p => !matcher.IsExcluded(Path.GetRelativePath(fullRoot, p).Replace('\\', '/'))));
         }
@@ -117,8 +118,22 @@ public sealed class WorkspaceModel
     public static WorkspaceModel DiscoverProjectOf(string filePath, string root, IReadOnlyList<string> excludeGlobs)
     {
         string fullPath = Path.GetFullPath(filePath);
-        var directory = new DirectoryInfo(Path.GetDirectoryName(fullPath) ?? root);
         string fullRoot = Path.GetFullPath(root);
+        string? projectDirectory = FindProjectDirectory(fullPath, fullRoot);
+        return projectDirectory is null
+            ? ForSingleFile(fullPath, fullRoot)
+            : DiscoverForProjectDirectory(projectDirectory, fullRoot, excludeGlobs);
+    }
+
+    /// <summary>
+    /// Walks upward from a file's directory to the nearest ancestor holding a project file, stopping
+    /// at the workspace root. Split out from <see cref="DiscoverProjectOf"/> so a caller keeping its
+    /// own cache of project workspaces has a cheap key to check before paying for discovery.
+    /// </summary>
+    public static string? FindProjectDirectory(string filePath, string root)
+    {
+        string fullRoot = Path.GetFullPath(root);
+        var directory = new DirectoryInfo(Path.GetDirectoryName(Path.GetFullPath(filePath)) ?? root);
 
         while (directory is not null)
         {
@@ -128,11 +143,7 @@ public sealed class WorkspaceModel
 
             if (projectFiles.Length > 0)
             {
-                WorkspaceModel discovered = Discover(directory.FullName, excludeGlobs);
-                var projects = projectFiles
-                    .Select(p => new ProjectModel(p, directory.FullName, discovered.Files))
-                    .ToList();
-                return new WorkspaceModel(fullRoot, discovered.Files, projects);
+                return directory.FullName;
             }
 
             if (string.Equals(directory.FullName, fullRoot, StringComparison.OrdinalIgnoreCase))
@@ -141,8 +152,18 @@ public sealed class WorkspaceModel
             }
             directory = directory.Parent;
         }
+        return null;
+    }
 
-        return ForSingleFile(fullPath, fullRoot);
+    /// <summary>Builds the workspace for a directory already known to hold at least one project file.</summary>
+    public static WorkspaceModel DiscoverForProjectDirectory(string projectDirectory, string root, IReadOnlyList<string> excludeGlobs)
+    {
+        string[] projectFiles = Directory.GetFiles(projectDirectory, "*.csproj", SearchOption.TopDirectoryOnly);
+        WorkspaceModel discovered = Discover(projectDirectory, excludeGlobs);
+        var projects = projectFiles
+            .Select(p => new ProjectModel(p, projectDirectory, discovered.Files))
+            .ToList();
+        return new WorkspaceModel(Path.GetFullPath(root), discovered.Files, projects);
     }
 
     /// <summary>Builds a workspace containing exactly one file, used for single-file analysis.</summary>
@@ -155,7 +176,14 @@ public sealed class WorkspaceModel
         return new WorkspaceModel(Path.GetFullPath(root), files, Array.Empty<ProjectModel>());
     }
 
-    private static IEnumerable<string> EnumerateFiles(string root)
+    /// <summary>
+    /// Walks the tree once, pruning a directory the moment it matches an exclude glob rather than
+    /// descending into it and discarding what it finds afterwards. <c>**/bin/**</c>-shaped globs
+    /// are the common case, and on a repository with a populated <c>node_modules</c> or a large
+    /// <c>.git</c>, enumerating those trees is the dominant cost of discovery — a directory pruned
+    /// here is never opened, never listed and never hashed against a pattern per file.
+    /// </summary>
+    private static IEnumerable<string> EnumerateFiles(string root, GlobMatcher matcher)
     {
         var options = new EnumerationOptions
         {
@@ -163,7 +191,27 @@ public sealed class WorkspaceModel
             IgnoreInaccessible = true,
             AttributesToSkip = FileAttributes.ReparsePoint
         };
-        return Directory.EnumerateFiles(root, "*", options);
+
+        return new FileSystemEnumerable<string>(
+            root,
+            static (ref FileSystemEntry entry) => entry.ToFullPath(),
+            options)
+        {
+            ShouldIncludePredicate = static (ref FileSystemEntry entry) => !entry.IsDirectory,
+            ShouldRecursePredicate = (ref FileSystemEntry entry) => !IsExcludedDirectory(root, matcher, ref entry)
+        };
+    }
+
+    /// <summary>
+    /// Whether a directory about to be recursed into is excluded. Exclude globs are written against
+    /// files (<c>**/bin/**</c>), so the directory's own relative path is tested with a trailing slash
+    /// appended — matching what a file inside it would look like — rather than against the bare
+    /// directory name, which a <c>/**</c>-shaped pattern would never match on its own.
+    /// </summary>
+    private static bool IsExcludedDirectory(string root, GlobMatcher matcher, ref FileSystemEntry entry)
+    {
+        string relative = Path.GetRelativePath(root, entry.ToFullPath()).Replace('\\', '/');
+        return matcher.IsExcluded(relative + "/");
     }
 
     /// <summary>

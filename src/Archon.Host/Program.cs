@@ -163,7 +163,7 @@ internal static class Program
 
         bool includeProject = parameters?["includeProject"]?.GetValue<bool>() ?? true;
         AnalysisResult result = includeProject
-            ? Session.Engine.AnalyseFileInProject(path, Session.Config, Session.Baseline)
+            ? Session.Engine.AnalyseFileInProject(path, Session.DiscoverProjectOf(path), Session.Config, Session.Baseline)
             : Session.Engine.AnalyseFile(path, Session.Config, Session.Baseline);
         return Describe(result, path);
     }

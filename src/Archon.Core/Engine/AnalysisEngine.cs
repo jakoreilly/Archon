@@ -61,13 +61,16 @@ public sealed class AnalysisEngine
     /// Analyses one file together with the project that owns it, so project-scope rules run on a
     /// save without paying for a whole-workspace pass. Findings elsewhere in the same project are
     /// included, since that is what those rules exist to see.
+    ///
+    /// The project workspace is supplied rather than discovered here, so a host that keeps its own
+    /// cache of project workspaces — keyed by project directory, and retired only by a structural
+    /// change — pays the cost of walking that project's directory once rather than on every save.
     /// </summary>
-    public AnalysisResult AnalyseFileInProject(string filePath, ArchonConfig config, Baseline baseline, CancellationToken cancellationToken = default)
+    public AnalysisResult AnalyseFileInProject(string filePath, WorkspaceModel projectWorkspace, ArchonConfig config, Baseline baseline, CancellationToken cancellationToken = default)
     {
-        WorkspaceModel workspace = WorkspaceModel.DiscoverProjectOf(filePath, config.WorkspaceRoot, config.EffectiveExcludes());
-        SourceFile? target = workspace.Files
+        SourceFile? target = projectWorkspace.Files
             .FirstOrDefault(f => string.Equals(f.Path, Path.GetFullPath(filePath), StringComparison.OrdinalIgnoreCase));
-        return Run(workspace, config, baseline, new[] { RuleScope.File, RuleScope.Project }, target, cancellationToken);
+        return Run(projectWorkspace, config, baseline, new[] { RuleScope.File, RuleScope.Project }, target, cancellationToken);
     }
 
     /// <summary>Analyses an entire workspace with every scope that has its inputs available.</summary>
