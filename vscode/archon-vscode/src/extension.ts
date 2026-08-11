@@ -112,6 +112,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         void analyzeDocument(editor.document);
       }
     }),
+    vscode.commands.registerCommand('archon.analyzeFile', (uri?: vscode.Uri, uris?: vscode.Uri[]) =>
+      analyzeFiles(uri, uris)
+    ),
     vscode.commands.registerCommand('archon.writeBaseline', writeBaseline),
     vscode.commands.registerCommand('archon.reload', reload),
     vscode.commands.registerCommand('archon.showOutput', () => output.show(true)),
@@ -426,6 +429,24 @@ async function analyzeDocument(document: vscode.TextDocument): Promise<void> {
     log(`could not analyse ${document.uri.fsPath}: ${describe(error)}`);
   } finally {
     endAnalysing();
+  }
+}
+
+/**
+ * Explorer context menu entry point. VS Code passes the right-clicked item as `uri` and, for a
+ * multi-select, every selected item as `uris` — `uri` alone covers the single-selection case.
+ */
+async function analyzeFiles(uri?: vscode.Uri, uris?: vscode.Uri[]): Promise<void> {
+  const targets = uris && uris.length > 0 ? uris : uri ? [uri] : [];
+  for (const target of targets) {
+    try {
+      const document = await vscode.workspace.openTextDocument(target);
+      if (isSupported(document)) {
+        await analyzeDocument(document);
+      }
+    } catch (error) {
+      log(`could not open ${target.fsPath}: ${describe(error)}`);
+    }
   }
 }
 

@@ -2,7 +2,7 @@
   "name": "archon-analysis",
   "displayName": "Archon for C# and SQL",
   "description": "Architecture, lifetime and SQL rules for C# and T-SQL, from one analysis process.",
-  "version": "0.2.4",
+  "version": "0.2.6",
   "publisher": "jakoreilly",
   "license": "MIT",
   "icon": "icon.png",
@@ -46,7 +46,13 @@
       },
       {
         "command": "archon.analyzeActiveFile",
-        "title": "Archon: Analyse Active File"
+        "title": "Archon: Analyse Active File",
+        "icon": "$(search)"
+      },
+      {
+        "command": "archon.analyzeFile",
+        "title": "Archon: Analyse File",
+        "icon": "$(search)"
       },
       {
         "command": "archon.writeBaseline",
@@ -141,6 +147,10 @@
     "menus": {
       "commandPalette": [
         {
+          "command": "archon.analyzeFile",
+          "when": "false"
+        },
+        {
           "command": "archon.copyHunkReference",
           "when": "false"
         },
@@ -155,6 +165,20 @@
         {
           "command": "archon.openMenu",
           "when": "false"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "archon.analyzeFile",
+          "when": "resourceLangId == csharp || resourceLangId == sql",
+          "group": "archon@1"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "archon.analyzeActiveFile",
+          "when": "resourceLangId == csharp || resourceLangId == sql",
+          "group": "navigation@1"
         }
       ],
       "view/title": [
