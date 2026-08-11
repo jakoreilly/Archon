@@ -135,6 +135,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('archon.previousChange', () => focus.jump(-1)),
     vscode.commands.registerCommand('archon.copyHunkReference', copyHunkReference),
     vscode.commands.registerCommand('archon.showCallers', (method: MethodImpactInfo) => showCallers(method)),
+    vscode.commands.registerCommand('archon.showCallersHere', showCallersHere),
     vscode.workspace.onDidSaveTextDocument((document) => {
       if (isSupported(document) && analysisTrigger() !== 'manual') {
         void analyzeDocument(document);
@@ -274,6 +275,25 @@ async function explainLine(): Promise<void> {
     await vscode.env.clipboard.writeText(entry.fullHash);
     vscode.window.setStatusBarMessage(`Copied ${entry.shortHash}`, 3000);
   }
+}
+
+/**
+ * The impact lens's caller list, reachable from the cursor instead of only by clicking the code
+ * lens above the method — the lens itself still needs a declaration to anchor to, so the lookup
+ * is unchanged, just given a second door in.
+ */
+function showCallersHere(): void {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) {
+    return;
+  }
+
+  const method = impactLens.methodAt(editor.document.uri, editor.selection.active.line);
+  if (!method) {
+    vscode.window.showInformationMessage('Archon: place the cursor on a C# method declaration to show its callers.');
+    return;
+  }
+  void showCallers(method);
 }
 
 async function copyHunkReference(uri: vscode.Uri, hunk: DiffHunk): Promise<void> {

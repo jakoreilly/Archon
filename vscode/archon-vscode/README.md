@@ -89,11 +89,12 @@ or `manual` for nothing automatic.
 | Archon: Describe Rule | Opens a description, with how to suppress or disable it |
 | Archon: Review Changes (Dim Everything Unchanged) | Enters review mode; right-click a C# or SQL file to reach it without the Explorer panel |
 | Archon: Why Is This Here? (Show Commit) | Shows the commit that last changed the cursor's line — the same lookup as the hover, on demand |
+| Archon: Show Callers | Shows the callers of the method under the cursor — the same lookup as the code lens, on demand |
 | Archon: Show Log | Opens the log |
 
-**Analyse Active File**, **Review Changes** and **Why Is This Here?** are also on the editor's
-right-click menu for C# and SQL files, so they don't require the command palette, an editor-title
-icon, or the Explorer panel to reach.
+**Analyse Active File**, **Review Changes**, **Why Is This Here?** and **Show Callers** (C# only,
+on a method declaration) are also on the editor's right-click menu, so they don't require the
+command palette, an editor-title icon, or the Explorer panel to reach.
 
 ## Settings
 

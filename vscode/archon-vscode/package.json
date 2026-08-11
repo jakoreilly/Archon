@@ -2,7 +2,7 @@
   "name": "archon-analysis",
   "displayName": "Archon for C# and SQL",
   "description": "Architecture, lifetime and SQL rules for C# and T-SQL, from one analysis process.",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "publisher": "jakoreilly",
   "license": "MIT",
   "icon": "icon.png",
@@ -125,6 +125,11 @@
         "title": "Archon: Show Callers"
       },
       {
+        "command": "archon.showCallersHere",
+        "title": "Archon: Show Callers",
+        "icon": "$(references)"
+      },
+      {
         "command": "archon.setSeverityForRule",
         "title": "Archon: Set Severity For Rule"
       }
@@ -201,6 +206,11 @@
           "command": "archon.explainLine",
           "when": "resourceLangId == csharp || resourceLangId == sql",
           "group": "archon@3"
+        },
+        {
+          "command": "archon.showCallersHere",
+          "when": "resourceLangId == csharp",
+          "group": "archon@4"
         }
       ],
       "view/title": [
