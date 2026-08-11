@@ -27,7 +27,7 @@
       read this one, and a build step that rewrote a tracked file to keep them aligned would trade a
       visible mismatch for an invisible one.
     -->
-    <Version>0.2.3</Version>
+    <Version>0.2.4</Version>
   </PropertyGroup>
 
 </Project>

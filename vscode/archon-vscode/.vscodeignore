@@ -4,6 +4,8 @@ tools/**
 node_modules/**
 tsconfig.json
 package-lock.json
+build-vsix.ps1
+build-vsix.cmd
 **/*.map
 **/*.ts
 !dist/**/*.js
