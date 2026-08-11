@@ -2,7 +2,7 @@
   "name": "archon-analysis",
   "displayName": "Archon for C# and SQL",
   "description": "Architecture, lifetime and SQL rules for C# and T-SQL, from one analysis process.",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "publisher": "jakoreilly",
   "license": "MIT",
   "icon": "icon.png",
@@ -104,6 +104,11 @@
         "title": "Archon: Review Changes Against..."
       },
       {
+        "command": "archon.explainLine",
+        "title": "Archon: Why Is This Here? (Show Commit)",
+        "icon": "$(git-commit)"
+      },
+      {
         "command": "archon.nextChange",
         "title": "Archon: Next Change"
       },
@@ -179,6 +184,23 @@
           "command": "archon.analyzeActiveFile",
           "when": "resourceLangId == csharp || resourceLangId == sql",
           "group": "navigation@1"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "archon.analyzeActiveFile",
+          "when": "resourceLangId == csharp || resourceLangId == sql",
+          "group": "archon@1"
+        },
+        {
+          "command": "archon.toggleReviewMode",
+          "when": "resourceLangId == csharp || resourceLangId == sql",
+          "group": "archon@2"
+        },
+        {
+          "command": "archon.explainLine",
+          "when": "resourceLangId == csharp || resourceLangId == sql",
+          "group": "archon@3"
         }
       ],
       "view/title": [

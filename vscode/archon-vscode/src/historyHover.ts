@@ -96,6 +96,11 @@ export class HistoryHoverProvider implements vscode.HoverProvider {
     return new vscode.Hover(markdown);
   }
 
+  /** The same blame lookup the hover uses, exposed for the "why is this here" command. */
+  public async lineHistory(document: vscode.TextDocument, line: number): Promise<LineHistory | undefined> {
+    return this.historyEnabled() ? this.historyFor(document, line) : undefined;
+  }
+
   private historyEnabled(): boolean {
     return vscode.workspace.getConfiguration('archon').get<boolean>('history.enabled', true);
   }

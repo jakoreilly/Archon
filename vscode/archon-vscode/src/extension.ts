@@ -6,6 +6,7 @@ import { PerfHintCodeActionProvider } from './codeActions';
 import { DiffHunk } from './diff';
 import { FocusLensProvider, FocusMode } from './focus';
 import { forgetRepositoryRoots } from './git';
+import { describeAge } from './history';
 import { HistoryHoverProvider } from './historyHover';
 import { ImpactLensProvider, showCallers } from './impactLens';
 import { Node, RuleNode, RulesTreeProvider } from './rulesTree';
@@ -128,6 +129,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ),
     vscode.commands.registerCommand('archon.explainRule', explainRule),
     vscode.commands.registerCommand('archon.toggleReviewMode', () => focus.toggle()),
+    vscode.commands.registerCommand('archon.explainLine', explainLine),
     vscode.commands.registerCommand('archon.setReviewBaseRef', setReviewBaseRef),
     vscode.commands.registerCommand('archon.nextChange', () => focus.jump(1)),
     vscode.commands.registerCommand('archon.previousChange', () => focus.jump(-1)),
@@ -241,6 +243,37 @@ async function setReviewBaseRef(): Promise<void> {
     return;
   }
   await focus.toggle(entered.trim() || undefined);
+}
+
+/**
+ * The hover's blame lookup, surfaced as a command so "why is this here" is reachable from a
+ * right-click and the command palette rather than only by holding still over a line.
+ */
+async function explainLine(): Promise<void> {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) {
+    return;
+  }
+
+  const line = editor.selection.active.line;
+  const entry = await history.lineHistory(editor.document, line);
+  if (!entry) {
+    vscode.window.showInformationMessage('Archon: no commit history for this line — it may be unsaved, uncommitted, or outside a git repository.');
+    return;
+  }
+
+  const detail = [
+    `${entry.shortHash} · ${entry.author} · ${describeAge(entry.authorTime, Date.now())}`,
+    entry.body
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+
+  const choice = await vscode.window.showInformationMessage(entry.subject, { modal: true, detail }, 'Copy Commit Hash');
+  if (choice === 'Copy Commit Hash') {
+    await vscode.env.clipboard.writeText(entry.fullHash);
+    vscode.window.setStatusBarMessage(`Copied ${entry.shortHash}`, 3000);
+  }
 }
 
 async function copyHunkReference(uri: vscode.Uri, hunk: DiffHunk): Promise<void> {

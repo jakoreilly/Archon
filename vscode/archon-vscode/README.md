@@ -87,7 +87,13 @@ or `manual` for nothing automatic.
 | Archon: Reload Configuration And Rules | Re-reads `.archon.json` and any external rule packs |
 | Archon: Set Rule Severity… | Changes one rule for this session |
 | Archon: Describe Rule | Opens a description, with how to suppress or disable it |
+| Archon: Review Changes (Dim Everything Unchanged) | Enters review mode; right-click a C# or SQL file to reach it without the Explorer panel |
+| Archon: Why Is This Here? (Show Commit) | Shows the commit that last changed the cursor's line — the same lookup as the hover, on demand |
 | Archon: Show Log | Opens the log |
+
+**Analyse Active File**, **Review Changes** and **Why Is This Here?** are also on the editor's
+right-click menu for C# and SQL files, so they don't require the command palette, an editor-title
+icon, or the Explorer panel to reach.
 
 ## Settings
 
