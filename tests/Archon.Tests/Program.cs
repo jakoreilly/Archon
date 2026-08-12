@@ -58,7 +58,7 @@ internal static class Program
         return harness.Report();
     }
 
-    private static void SqlWildcardRules(Harness harness)
+    internal static void SqlWildcardRules(Harness harness)
     {
         harness.Group("SQL wildcard column list");
 
@@ -86,7 +86,7 @@ internal static class Program
         harness.Equal("flags each wildcard separately", 2, multiple.Analyse().Findings.CountOf(SelectStarRule.Id));
     }
 
-    private static void SqlConventionRules(Harness harness)
+    internal static void SqlConventionRules(Harness harness)
     {
         harness.Group("SQL conventions");
 
@@ -141,7 +141,7 @@ internal static class Program
             badPattern.Analyse().Findings.CountOf(SqlConventionRule.ProcedureNaming));
     }
 
-    private static void SecurityHotspotRules(Harness harness)
+    internal static void SecurityHotspotRules(Harness harness)
     {
         harness.Group("Security hotspots");
 
@@ -211,7 +211,7 @@ internal static class Program
             unrelatedRegexLikeCall.Analyse().Findings.CountOf(SecurityHotspotRule.CatastrophicBacktrackingRegex));
     }
 
-    private static void ComplexityRules(Harness harness)
+    internal static void ComplexityRules(Harness harness)
     {
         harness.Group("Complexity and duplication");
 
@@ -291,7 +291,7 @@ internal static class Program
             belowOccurrenceThreshold.Analyse().Findings.CountOf(ComplexityRule.DuplicatedStringLiteral));
     }
 
-    private static void UnusedSymbolsRules(Harness harness)
+    internal static void UnusedSymbolsRules(Harness harness)
     {
         harness.Group("Unused parameters and locals");
 
@@ -359,7 +359,7 @@ internal static class Program
             constLocal.Analyse().Findings.CountOf(UnusedSymbolsRule.UnusedLocalVariable));
     }
 
-    private static void LogicHygieneRules(Harness harness)
+    internal static void LogicHygieneRules(Harness harness)
     {
         harness.Group("Logic hygiene");
 
@@ -414,7 +414,7 @@ internal static class Program
             loggerCall.Analyse().Findings.CountOf(LogicHygieneRule.ConsoleUsedForOutput));
     }
 
-    private static void AsyncSafetyRules(Harness harness)
+    internal static void AsyncSafetyRules(Harness harness)
     {
         harness.Group("Async safety rules");
 
@@ -499,7 +499,7 @@ internal static class Program
             suppressed.Analyse().Findings.CountOf(AsyncSafetyRule.AsyncVoid));
     }
 
-    private static void PerfHintRules(Harness harness)
+    internal static void PerfHintRules(Harness harness)
     {
         harness.Group("Performance hints");
 
@@ -567,7 +567,7 @@ internal static class Program
             prose.Analyse().Findings.CountOf(PerfHintRule.InlineWildcardSelect));
     }
 
-    private static void ConfigKeyRules(Harness harness)
+    internal static void ConfigKeyRules(Harness harness)
     {
         harness.Group("Configuration keys");
 
@@ -642,7 +642,7 @@ internal static class Program
         Directory.Delete(root, recursive: true);
     }
 
-    private static void ProjectCycleRules(Harness harness)
+    internal static void ProjectCycleRules(Harness harness)
     {
         harness.Group("Project reference cycles");
 
@@ -717,7 +717,7 @@ internal static class Program
         }
     }
 
-    private static void CallGraphChecks(Harness harness)
+    internal static void CallGraphChecks(Harness harness)
     {
         harness.Group("Method impact");
 
@@ -850,7 +850,7 @@ internal static class Program
     /// makes most of its calls from constructors, so counting only method bodies reports nothing
     /// for methods that are in constant use.
     /// </summary>
-    private static void CallGraphMemberChecks(Harness harness)
+    internal static void CallGraphMemberChecks(Harness harness)
     {
         harness.Group("Method impact across member kinds");
 
@@ -919,7 +919,7 @@ internal static class Program
     /// duplicates by position alone breaks that: removing the first renumbers the rest, so a
     /// developer is failed by a check for findings they never touched.
     /// </summary>
-    private static void BaselineStabilityRules(Harness harness)
+    internal static void BaselineStabilityRules(Harness harness)
     {
         harness.Group("Baseline stability");
 
@@ -956,7 +956,7 @@ internal static class Program
     /// ever touched is the problem the warm process was meant to avoid. Editor text is exempt:
     /// evicting it would substitute what is on disk for what the user is looking at.
     /// </summary>
-    private static void SourceCacheRules(Harness harness)
+    internal static void SourceCacheRules(Harness harness)
     {
         harness.Group("Source cache");
 
@@ -992,6 +992,67 @@ internal static class Program
         cache.Invalidate(evicted);
         harness.Equal("re-reads a file once invalidated", "class Rewritten { }", cache.GetText(evicted));
 
+        {
+            var raceCache = new SourceCache();
+            string path = Path.Combine(Path.GetTempPath(), "archon-race-test.cs");
+            raceCache.SetText(path, "class Race { void M() { } }");
+
+            var exceptions = new System.Collections.Concurrent.ConcurrentBag<Exception>();
+            var results = new ParsedCSharp?[50];
+            var tasks = new Task[50];
+            for (int i = 0; i < tasks.Length; i++)
+            {
+                int index = i;
+                tasks[index] = Task.Run(() =>
+                {
+                    try
+                    {
+                        results[index] = raceCache.GetCSharp(path);
+                    }
+                    catch (Exception ex)
+                    {
+                        exceptions.Add(ex);
+                    }
+                });
+            }
+            Task.WaitAll(tasks);
+
+            harness.Check("50 concurrent GetCSharp calls throw nothing", exceptions.IsEmpty);
+            ParsedCSharp? final = raceCache.GetCSharp(path);
+            harness.Check("every concurrent result is reference-equal to the cached parse",
+                results.All(r => ReferenceEquals(r, final)));
+        }
+        {
+            var raceCache = new SourceCache();
+            string path = Path.Combine(Path.GetTempPath(), "archon-race-test.sql");
+            raceCache.SetText(path, "SELECT 1;");
+
+            var exceptions = new System.Collections.Concurrent.ConcurrentBag<Exception>();
+            var results = new ParsedSql?[50];
+            var tasks = new Task[50];
+            for (int i = 0; i < tasks.Length; i++)
+            {
+                int index = i;
+                tasks[index] = Task.Run(() =>
+                {
+                    try
+                    {
+                        results[index] = raceCache.GetSql(path);
+                    }
+                    catch (Exception ex)
+                    {
+                        exceptions.Add(ex);
+                    }
+                });
+            }
+            Task.WaitAll(tasks);
+
+            harness.Check("50 concurrent GetSql calls throw nothing", exceptions.IsEmpty);
+            ParsedSql? final = raceCache.GetSql(path);
+            harness.Check("every concurrent result is reference-equal to the cached parse",
+                results.All(r => ReferenceEquals(r, final)));
+        }
+
         Directory.Delete(root, recursive: true);
     }
 
@@ -1000,7 +1061,7 @@ internal static class Program
     /// owned by both. This held when each project scanned the whole file list for itself, and must
     /// still hold now that files are walked upwards instead.
     /// </summary>
-    private static void ProjectAttributionRules(Harness harness)
+    internal static void ProjectAttributionRules(Harness harness)
     {
         harness.Group("Project attribution");
 
@@ -1043,7 +1104,7 @@ internal static class Program
         return engine.AnalyseWorkspace(workspace, config, Baseline.Empty);
     }
 
-    private static void LayerRules(Harness harness)
+    internal static void LayerRules(Harness harness)
     {
         harness.Group("Layer dependency rules");
 
@@ -1096,7 +1157,7 @@ internal static class Program
         harness.Equal("stays silent when no layers are configured", 0, unconfigured.Analyse().Findings.CountOf(LayerDependencyRule.Id));
     }
 
-    private static void LifetimeRules(Harness harness)
+    internal static void LifetimeRules(Harness harness)
     {
         harness.Group("Service lifetime rules");
 
@@ -1203,7 +1264,7 @@ internal static class Program
             factory.Analyse().Findings.Count(f => f.Category == "lifetime"));
     }
 
-    private static void SuppressionRules(Harness harness)
+    internal static void SuppressionRules(Harness harness)
     {
         harness.Group("Suppression markers");
 
@@ -1238,7 +1299,7 @@ internal static class Program
             suppressed.Analyse().Findings.CountOf(SelectStarRule.Id));
     }
 
-    private static void BaselineRules(Harness harness)
+    internal static void BaselineRules(Harness harness)
     {
         harness.Group("Baseline");
 
@@ -1277,7 +1338,7 @@ internal static class Program
             Baseline.Load(Path.Combine(Path.GetTempPath(), "archon-absent-baseline.json"), out _).Count);
     }
 
-    private static void ConfigurationRules(Harness harness)
+    internal static void ConfigurationRules(Harness harness)
     {
         harness.Group("Configuration");
 
@@ -1314,7 +1375,7 @@ internal static class Program
             !ArchonConfig.TryParseSeverity("severe", out _));
     }
 
-    private static void ScopeRules(Harness harness)
+    internal static void ScopeRules(Harness harness)
     {
         harness.Group("Rule scope");
 
@@ -1356,7 +1417,7 @@ internal static class Program
             singleFile.Findings.CountOf(CaptiveDependencyRule.SingletonCapturesScoped));
     }
 
-    private static void RegistryRules(Harness harness)
+    internal static void RegistryRules(Harness harness)
     {
         harness.Group("Rule registry");
 
@@ -1393,7 +1454,7 @@ internal static class Program
         }
     }
 
-    private static void GlobRules(Harness harness)
+    internal static void GlobRules(Harness harness)
     {
         harness.Group("Path exclusion");
 
@@ -1416,7 +1477,7 @@ internal static class Program
     /// three assertions are the regression that protects Phase 2's central claim: a bare method at
     /// file scope is invisible to the method-shaped rules unless it is wrapped first.
     /// </summary>
-    private static void SnippetExtractionRules(Harness harness)
+    internal static void SnippetExtractionRules(Harness harness)
     {
         harness.Group("Snippet extraction and wrapping");
 
@@ -1490,7 +1551,7 @@ internal static class Program
     /// (Phase 3/4), so a rule change there that starts firing on idiomatic library code fails this
     /// suite exactly as a built-in rule change would.
     /// </summary>
-    private static void SnippetCorpusRules(Harness harness)
+    internal static void SnippetCorpusRules(Harness harness)
     {
         harness.Group("Snippet library corpus");
 
@@ -1586,7 +1647,7 @@ internal static class Program
     /// overrides — rather than re-implementing either, which is what the last three assertions
     /// prove.
     /// </summary>
-    private static void ServiceConventionRules(Harness harness)
+    internal static void ServiceConventionRules(Harness harness)
     {
         harness.Group("Service convention rules");
 
@@ -1684,7 +1745,7 @@ internal static class Program
     /// abandoned rather than shipped — see the phase report and the class doc comment on
     /// AsyncContractRule for why — so only SVC0010 and SVC0020 have assertions here.
     /// </summary>
-    private static void ConventionPackTier2Rules(Harness harness)
+    internal static void ConventionPackTier2Rules(Harness harness)
     {
         harness.Group("Convention pack tier 2");
 
@@ -1815,7 +1876,7 @@ internal static class Program
     /// the static field initialisation order trap called out in Phase 5's GOTCHA and a typo in a
     /// mapped key.
     /// </summary>
-    private static void SnippetCatalogRules(Harness harness)
+    internal static void SnippetCatalogRules(Harness harness)
     {
         harness.Group("Snippet catalog");
 
@@ -1854,7 +1915,7 @@ internal static class Program
     /// ignore is reported — and, just as importantly, that a correct file reports nothing. A
     /// validator that cried wolf on a working configuration would be turned off within a week.
     /// </summary>
-    private static void ConfigValidationRules(Harness harness)
+    internal static void ConfigValidationRules(Harness harness)
     {
         harness.Group("Configuration validation");
 
@@ -1981,7 +2042,7 @@ internal static class Program
     /// The schema is what stops most bad entries being typed at all, so what matters is that it is
     /// generated from the registry rather than fixed, and that it stays valid JSON an editor will load.
     /// </summary>
-    private static void ConfigSchemaRules(Harness harness)
+    internal static void ConfigSchemaRules(Harness harness)
     {
         harness.Group("Configuration schema");
 

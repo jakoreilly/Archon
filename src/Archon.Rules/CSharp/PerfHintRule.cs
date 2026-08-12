@@ -217,6 +217,7 @@ public sealed class PerfHintRule : IRule
 
     private IEnumerable<Finding> FindInlineWildcard(ParsedCSharp parsed, string filePath)
     {
+        var parser = new TSql150Parser(initialQuotedIdentifiers: true);
         foreach (LiteralExpressionSyntax literal in parsed.Root.DescendantNodes().OfType<LiteralExpressionSyntax>())
         {
             if (!literal.IsKind(SyntaxKind.StringLiteralExpression))
@@ -228,7 +229,7 @@ public sealed class PerfHintRule : IRule
             {
                 continue;
             }
-            if (!ContainsWildcardSelect(text))
+            if (!ContainsWildcardSelect(parser, text))
             {
                 continue;
             }
@@ -242,9 +243,8 @@ public sealed class PerfHintRule : IRule
     /// valid T-SQL fails to parse and is reported as nothing at all, which is what keeps ordinary
     /// prose containing an asterisk from being flagged.
     /// </summary>
-    private static bool ContainsWildcardSelect(string text)
+    private static bool ContainsWildcardSelect(TSql150Parser parser, string text)
     {
-        var parser = new TSql150Parser(initialQuotedIdentifiers: true);
         using var reader = new StringReader(text);
         TSqlFragment fragment = parser.Parse(reader, out IList<ParseError> errors);
         if (errors.Count > 0)

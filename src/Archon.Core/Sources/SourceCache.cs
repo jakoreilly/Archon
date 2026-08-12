@@ -95,8 +95,14 @@ public sealed class SourceCache
         }
         if (entry.CSharp is null)
         {
-            SyntaxTree tree = CSharpSyntaxTree.ParseText(entry.Text, path: path);
-            entry.CSharp = new ParsedCSharp(tree, tree.GetRoot());
+            lock (entry)
+            {
+                if (entry.CSharp is null)
+                {
+                    SyntaxTree tree = CSharpSyntaxTree.ParseText(entry.Text, path: path);
+                    entry.CSharp = new ParsedCSharp(tree, tree.GetRoot());
+                }
+            }
         }
         return entry.CSharp;
     }
@@ -110,12 +116,18 @@ public sealed class SourceCache
         }
         if (entry.Sql is null)
         {
-            var parser = new TSql150Parser(initialQuotedIdentifiers: true);
-            using var reader = new StringReader(entry.Text);
-            TSqlFragment fragment = parser.Parse(reader, out IList<ParseError> errors);
-            entry.Sql = errors.Count > 0
-                ? new ParsedSql(null, errors.ToList())
-                : new ParsedSql(fragment, Array.Empty<ParseError>());
+            lock (entry)
+            {
+                if (entry.Sql is null)
+                {
+                    var parser = new TSql150Parser(initialQuotedIdentifiers: true);
+                    using var reader = new StringReader(entry.Text);
+                    TSqlFragment fragment = parser.Parse(reader, out IList<ParseError> errors);
+                    entry.Sql = errors.Count > 0
+                        ? new ParsedSql(null, errors.ToList())
+                        : new ParsedSql(fragment, Array.Empty<ParseError>());
+                }
+            }
         }
         return entry.Sql;
     }
@@ -129,7 +141,7 @@ public sealed class SourceCache
         }
         try
         {
-            Entry added = _entries.GetOrAdd(path, NewEntry(File.ReadAllText(path), pinned: false));
+            Entry added = _entries.GetOrAdd(path, key => NewEntry(File.ReadAllText(key), pinned: false));
             Touch(added);
             EvictIfFull();
             return added;

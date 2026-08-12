@@ -209,7 +209,7 @@ public static class ConfigValidator
     /// The closest candidate within <see cref="MaxSuggestionDistance"/> edits, or null when nothing
     /// is near enough to propose. Ties are broken alphabetically so the message is reproducible.
     /// </summary>
-    private static string? Nearest(string value, IEnumerable<string> candidates)
+    public static string? Nearest(string value, IEnumerable<string> candidates)
     {
         string? best = null;
         int bestDistance = int.MaxValue;

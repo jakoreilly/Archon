@@ -8,11 +8,13 @@ using Archon.Rules;
 namespace Archon.Tests;
 
 /// <summary>Records assertion outcomes and reports them as an exit code.</summary>
-internal sealed class Harness
+public sealed class Harness
 {
     private readonly List<string> _failures = new();
     private int _passed;
     private string _group = "";
+
+    public IReadOnlyList<string> Failures => _failures;
 
     public void Group(string name)
     {

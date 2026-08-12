@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Archon.Core.Findings;
@@ -108,6 +109,8 @@ public sealed class SqlConventionRule : IRule
     /// Reads a configured pattern, ignoring one that does not compile rather than failing the whole
     /// pass, since an invalid pattern is a configuration mistake and not a reason to stop analysing.
     /// </summary>
+    private static readonly ConcurrentDictionary<string, Regex?> PatternCache = new();
+
     private static Regex? ReadPattern(RuleContext context, string ruleId)
     {
         string? pattern = ReadString(context, ruleId, "pattern");
@@ -115,14 +118,17 @@ public sealed class SqlConventionRule : IRule
         {
             return null;
         }
-        try
+        return PatternCache.GetOrAdd(pattern, static p =>
         {
-            return new Regex(pattern, RegexOptions.CultureInvariant);
-        }
-        catch (ArgumentException)
-        {
-            return null;
-        }
+            try
+            {
+                return new Regex(p, RegexOptions.CultureInvariant);
+            }
+            catch (ArgumentException)
+            {
+                return null;
+            }
+        });
     }
 
     private sealed class ConventionVisitor : TSqlFragmentVisitor

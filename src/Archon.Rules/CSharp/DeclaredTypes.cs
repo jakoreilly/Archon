@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
@@ -13,8 +14,15 @@ namespace Archon.Rules.CSharp;
 /// </summary>
 internal static class DeclaredTypes
 {
+    private static readonly ConditionalWeakTable<SyntaxNode, Dictionary<string, string>> Cache = new();
+
     public static Dictionary<string, string> Collect(SyntaxNode root)
     {
+        if (Cache.TryGetValue(root, out Dictionary<string, string>? cached))
+        {
+            return cached;
+        }
+
         var map = new Dictionary<string, string>(StringComparer.Ordinal);
 
         foreach (ParameterSyntax parameter in root.DescendantNodes().OfType<ParameterSyntax>())
@@ -40,6 +48,7 @@ internal static class DeclaredTypes
             map[property.Identifier.Text] = property.Type.ToString();
         }
 
+        Cache.AddOrUpdate(root, map);
         return map;
     }
 

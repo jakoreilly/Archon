@@ -341,6 +341,7 @@ async function startHost(context: vscode.ExtensionContext): Promise<void> {
   const root = folders[0]?.uri.fsPath;
   if (!root) {
     setStatus('$(circle-slash) Archon: no folder open', 'archon.showOutput', 'Open a folder for Archon to analyse.');
+    setRulesTreeEmpty(true);
     return;
   }
   if (folders.length > 1) {
@@ -363,6 +364,7 @@ async function startHost(context: vscode.ExtensionContext): Promise<void> {
     rules = reply.rules;
     configPath = reply.configPath;
     tree.setRules(rules);
+    setRulesTreeEmpty(rules.length === 0);
 
     log(`initialised at ${reply.root}`);
     log(reply.configPath ? `configuration: ${reply.configPath}` : 'no .archon.json found; using default severities.');
@@ -383,6 +385,7 @@ async function startHost(context: vscode.ExtensionContext): Promise<void> {
       'archon.restart',
       'Could not start the analysis process. Select to try again, or open the log for details.'
     );
+    setRulesTreeEmpty(true);
     log(`could not start the analysis process at ${hostPath}: ${describe(error)}`);
     log('Check that the .NET runtime is installed and on PATH, or set archon.hostPath.');
   }
@@ -509,10 +512,40 @@ async function analyzeWorkspace(): Promise<void> {
   }
   beginAnalysing();
   await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Window, title: 'Archon: analysing workspace' },
-    async () => {
+    { location: vscode.ProgressLocation.Window, title: 'Archon: analysing workspace', cancellable: true },
+    async (progress, token) => {
+      const startedAt = Date.now();
+      const ticker = setInterval(() => {
+        const elapsedSeconds = Math.round((Date.now() - startedAt) / 1000);
+        progress.report({ message: `${elapsedSeconds}s elapsed…` });
+      }, 1000);
+      token.onCancellationRequested(() => {
+        log('workspace analysis: no longer waiting — the analysis process keeps running in the background and results will still apply when it answers.');
+      });
+
       try {
-        const reply = await client!.analyzeWorkspace();
+        const resultPromise = client!.analyzeWorkspace();
+        const outcome = await Promise.race([
+          resultPromise.then((reply) => ({ cancelled: false as const, reply })),
+          new Promise<{ cancelled: true }>((resolve) => {
+            token.onCancellationRequested(() => resolve({ cancelled: true }));
+          })
+        ]);
+
+        if (outcome.cancelled) {
+          void resultPromise.then(
+            (reply) => {
+              applyForWorkspace(reply);
+              markCleanVisibleEditorsAnalysed(reply.elapsedMilliseconds);
+              reportSkipped(reply);
+              log(`workspace pass finished after cancellation was requested: ${reply.findings.length} finding(s).`);
+            },
+            (error) => log(`workspace analysis failed: ${describe(error)}`)
+          );
+          return;
+        }
+
+        const reply = outcome.reply;
         applyForWorkspace(reply);
         markCleanVisibleEditorsAnalysed(reply.elapsedMilliseconds);
         reportSkipped(reply);
@@ -523,6 +556,7 @@ async function analyzeWorkspace(): Promise<void> {
       } catch (error) {
         log(`workspace analysis failed: ${describe(error)}`);
       } finally {
+        clearInterval(ticker);
         endAnalysing();
       }
     }
@@ -585,6 +619,7 @@ async function reload(): Promise<void> {
     rules = reply.rules;
     configPath = reply.configPath;
     tree.setRules(rules);
+    setRulesTreeEmpty(rules.length === 0);
     for (const message of reply.messages) {
       log(message);
     }
@@ -670,6 +705,7 @@ async function applySeverity(rule: RuleInfo, severity: string, persist: boolean)
     const updated = await client.listRules();
     rules = updated.rules;
     tree.setRules(rules);
+    setRulesTreeEmpty(rules.length === 0);
     refreshStatusBar();
     log(
       persist
@@ -1065,6 +1101,10 @@ function setStatus(
   status.tooltip = tooltip;
   status.command = command;
   status.show();
+}
+
+function setRulesTreeEmpty(empty: boolean): void {
+  void vscode.commands.executeCommand('setContext', 'archon.rulesEmpty', empty);
 }
 
 function log(message: string): void {

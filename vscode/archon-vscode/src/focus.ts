@@ -232,6 +232,7 @@ export class FocusMode {
     }
     const hunks = this.hunksFor(editor.document.uri);
     if (!hunks || hunks.length === 0) {
+      vscode.window.setStatusBarMessage('Archon: nothing changed in this file', 3000);
       return;
     }
 

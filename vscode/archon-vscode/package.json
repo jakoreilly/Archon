@@ -154,6 +154,13 @@
         }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "archon.rules",
+        "contents": "Archon has not analysed this workspace yet.\n[Show Log](command:archon.showOutput)\n[Restart Analysis Process](command:archon.restart)",
+        "when": "archon.rulesEmpty"
+      }
+    ],
     "menus": {
       "commandPalette": [
         {

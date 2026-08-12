@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Archon.Core.Configuration;
 using Archon.Core.Engine;
 using Archon.Core.Explanations;
@@ -69,9 +70,16 @@ internal static class Program
     private static bool IsVersion(string argument) =>
         argument is "--version" or "-v" or "version";
 
+    private static bool PathExists(string path) => Directory.Exists(path) || File.Exists(path);
+
+    private static readonly string[] CommandNames = { "check", "rules", "baseline", "explain", "init", "schema" };
+
     private static int Unknown(string command)
     {
-        Console.Error.WriteLine($"archon: unknown command '{command}'.");
+        string? suggestion = ConfigValidator.Nearest(command, CommandNames);
+        Console.Error.WriteLine(suggestion is null
+            ? $"archon: unknown command '{command}'."
+            : $"archon: unknown command '{command}' — did you mean '{suggestion}'?");
         PrintUsage();
         return ExitUsage;
     }
@@ -115,7 +123,18 @@ internal static class Program
 
     private static int RunCheck(string[] args)
     {
+        if (args.Length > 0 && IsHelp(args[0]))
+        {
+            PrintUsage();
+            return ExitClean;
+        }
+
         Options options = Options.Parse(args);
+        if (!PathExists(options.Path))
+        {
+            Console.Error.WriteLine($"archon: '{options.Path}' does not exist.");
+            return ExitUsage;
+        }
         Session session = Session.Create(options.Path);
 
         WorkspaceModel workspace = WorkspaceModel.Discover(options.Path, session.Config.EffectiveExcludes());
@@ -145,12 +164,40 @@ internal static class Program
 
     private static int RunRules(string[] args)
     {
+        if (args.Length > 0 && IsHelp(args[0]))
+        {
+            PrintUsage();
+            return ExitClean;
+        }
+
         Options options = Options.Parse(args);
         Session session = Session.Create(options.Path);
 
+        List<RegisteredRule> rules = session.Engine.Registry.Descriptors
+            .OrderBy(r => r.Descriptor.Id, StringComparer.Ordinal)
+            .ToList();
+
+        if (options.Format == ReportFormat.Json)
+        {
+            var payload = rules.Select(registered => new
+            {
+                id = registered.Descriptor.Id,
+                severity = Reporter.Label(session.Config.SeverityFor(registered.Descriptor)),
+                scope = registered.Rule.Scope.ToString(),
+                category = registered.Descriptor.Category,
+                title = registered.Descriptor.Title
+            });
+            Console.WriteLine(JsonSerializer.Serialize(payload, new JsonSerializerOptions
+            {
+                WriteIndented = true,
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+            }));
+            ReportMessages(session);
+            return ExitClean;
+        }
+
         Console.WriteLine($"{"Rule",-8} {"Severity",-12} {"Scope",-10} {"Category",-14} Title");
-        foreach (RegisteredRule registered in session.Engine.Registry.Descriptors
-                     .OrderBy(r => r.Descriptor.Id, StringComparer.Ordinal))
+        foreach (RegisteredRule registered in rules)
         {
             Severity severity = session.Config.SeverityFor(registered.Descriptor);
             Console.WriteLine($"{registered.Descriptor.Id,-8} {Reporter.Label(severity),-12} {registered.Rule.Scope,-10} {registered.Descriptor.Category,-14} {registered.Descriptor.Title}");
@@ -179,7 +226,18 @@ internal static class Program
 
     private static int RunBaseline(string[] args)
     {
+        if (args.Length > 0 && IsHelp(args[0]))
+        {
+            PrintUsage();
+            return ExitClean;
+        }
+
         Options options = Options.Parse(args);
+        if (!PathExists(options.Path))
+        {
+            Console.Error.WriteLine($"archon: '{options.Path}' does not exist.");
+            return ExitUsage;
+        }
         Session session = Session.Create(options.Path);
 
         WorkspaceModel workspace = WorkspaceModel.Discover(options.Path, session.Config.EffectiveExcludes());
@@ -194,6 +252,12 @@ internal static class Program
 
     private static int RunExplain(string[] args)
     {
+        if (args.Length > 0 && IsHelp(args[0]))
+        {
+            PrintUsage();
+            return ExitClean;
+        }
+
         if (args.Length == 0)
         {
             Console.Error.WriteLine("archon: explain needs a rule id.");
@@ -204,7 +268,11 @@ internal static class Program
         RegisteredRule? registered = session.Engine.Registry.Find(args[0]);
         if (registered is null)
         {
-            Console.Error.WriteLine($"archon: no rule with id '{args[0]}'.");
+            string? suggestion = ConfigValidator.Nearest(
+                args[0], session.Engine.Registry.Descriptors.Select(d => d.Descriptor.Id));
+            Console.Error.WriteLine(suggestion is null
+                ? $"archon: no rule with id '{args[0]}'."
+                : $"archon: no rule with id '{args[0]}' — did you mean '{suggestion}'?");
             return ExitUsage;
         }
 
@@ -239,6 +307,12 @@ internal static class Program
     /// </summary>
     private static int RunInit(string[] args)
     {
+        if (args.Length > 0 && IsHelp(args[0]))
+        {
+            PrintUsage();
+            return ExitClean;
+        }
+
         Options options = Options.Parse(args);
         string directory = Directory.Exists(options.Path)
             ? System.IO.Path.GetFullPath(options.Path)
@@ -286,6 +360,12 @@ internal static class Program
     /// </summary>
     private static int RunSchema(string[] args)
     {
+        if (args.Length > 0 && IsHelp(args[0]))
+        {
+            PrintUsage();
+            return ExitClean;
+        }
+
         Options options = Options.Parse(args);
         Session session = Session.Create(options.Path);
         string schema = ConfigSchema.Generate(session.Engine.Registry);
