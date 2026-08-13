@@ -10,6 +10,7 @@ using Archon.Rules;
 using Archon.Rules.CSharp;
 using Archon.Rules.Sql;
 using Archon.Tests.Corpus;
+using Microsoft.SqlServer.TransactSql.ScriptDom;
 using ServiceConventionRules;
 
 namespace Archon.Tests;
@@ -60,6 +61,7 @@ internal static class Program
         GitHistoryRules(harness);
         DebtRankingRules(harness);
         GitHistoryChurnSinceRules(harness);
+        SchemaCatalogRules(harness);
         TrendAnalyzerRules(harness);
         BaselineHistoryReadingRules(harness);
 
@@ -2570,5 +2572,48 @@ internal static class Program
         {
             DeleteDirectoryRobustly(root);
         }
+    }
+
+    internal static void SchemaCatalogRules(Harness harness)
+    {
+        harness.Group("SchemaCatalog: table/column model from parsed DDL");
+
+        static TSqlFragment Parse(string sql)
+        {
+            var parser = new TSql150Parser(initialQuotedIdentifiers: true);
+            using var reader = new StringReader(sql);
+            TSqlFragment fragment = parser.Parse(reader, out IList<ParseError> errors);
+            if (errors.Count > 0)
+            {
+                throw new InvalidOperationException($"test fixture did not parse: {errors[0].Message}");
+            }
+            return fragment;
+        }
+
+        var catalog = SchemaCatalog.Build(new[] { Parse("CREATE TABLE dbo.Orders (Id int, CustomerId int, Total decimal);") });
+        TableSchema? orders = catalog.Find("dbo", "Orders");
+        harness.Check("finds a table defined with an explicit schema", orders is not null);
+        harness.Check("knows a real column exists", orders!.HasColumn("CustomerId"));
+        harness.Check("column lookup is case-insensitive", orders.HasColumn("customerid"));
+        harness.Check("does not invent a column that was never defined", !orders.HasColumn("Bogus"));
+
+        var unqualified = SchemaCatalog.Build(new[] { Parse("CREATE TABLE Widgets (Id int);") });
+        harness.Check("an unqualified table name defaults to the dbo schema",
+            unqualified.Find("dbo", "Widgets") is not null);
+
+        var acrossFiles = SchemaCatalog.Build(new[]
+        {
+            Parse("CREATE TABLE dbo.A (Id int);"),
+            Parse("CREATE TABLE dbo.B (Id int);")
+        });
+        harness.Check("a table from a second fragment is present alongside the first",
+            acrossFiles.Find("dbo", "A") is not null && acrossFiles.Find("dbo", "B") is not null);
+
+        var withTemp = SchemaCatalog.Build(new[] { Parse("CREATE PROCEDURE dbo.P AS CREATE TABLE #Scratch (Id int);") });
+        harness.Check("a temp table declared inside a procedure body is not added to the catalog",
+            withTemp.Find("dbo", "#Scratch") is null);
+
+        harness.Check("an unknown table returns null rather than an empty TableSchema",
+            SchemaCatalog.Empty.Find("dbo", "Nothing") is null);
     }
 }
