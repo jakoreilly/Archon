@@ -13,6 +13,7 @@ public sealed class HarnessGroupTests
     {
         yield return new object[] { "SqlWildcardRules", (Action<Harness>)Program.SqlWildcardRules };
         yield return new object[] { "SqlConventionRules", (Action<Harness>)Program.SqlConventionRules };
+        yield return new object[] { "SqlFormatterRules", (Action<Harness>)Program.SqlFormatterRules };
         yield return new object[] { "SecurityHotspotRules", (Action<Harness>)Program.SecurityHotspotRules };
         yield return new object[] { "ComplexityRules", (Action<Harness>)Program.ComplexityRules };
         yield return new object[] { "UnusedSymbolsRules", (Action<Harness>)Program.UnusedSymbolsRules };

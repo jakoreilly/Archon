@@ -60,6 +60,7 @@ can fail a build; anything needing judgement is a suggestion an editor shows and
 
 ```
 archon check [path]        Analyse a folder or file and report findings.
+archon format [path]       Format a folder or file of T-SQL in place.
 archon rules [path]        List every rule and its effective severity.
 archon baseline [path]     Accept current findings, so only new ones fail.
 archon explain <ruleId>    Describe one rule.
@@ -69,7 +70,11 @@ archon --version           Print the version.
 ```
 
 `check` takes `--format console|json|sarif`, `--fail-on error|warning|information|hint|never`,
-`--no-baseline` and `--output <file>`. `init` takes `--force`, and `schema` takes `--output <file>`.
+`--no-baseline` and `--output <file>`. `format` takes `--check`, which reports which files would
+change without writing them and exits `3` if any would — the same contract the standalone
+`sqlfmt-tsql` tool this was folded in from uses, so a CI step written against that tool needs no
+change to run against `archon format --check` instead. `init` takes `--force`, and `schema` takes
+`--output <file>`.
 
 Exit codes are `0` when nothing reached the `--fail-on` level, `1` when something did, and `2`
 when the command could not run. A pipeline step is usually:
@@ -99,6 +104,12 @@ and the log records the configuration entry that would make one permanent.
 Saving a `.cs` or `.sql` file re-analyses that file with the rules a single file can decide.
 Rules needing the whole workspace run on **Archon: Analyse Whole Workspace**. Set
 `archon.analyseOn` to `type` to analyse while typing, or `manual` for nothing automatic.
+
+Archon also registers as a formatter for `.sql`: **Format Document** (`Shift+Alt+F`) and
+`editor.formatOnSave` both work once Archon is picked as the default formatter for T-SQL, using
+the same loss-safe formatter `archon format` runs on the command line. **Archon: Format File** and
+**Archon: Format Folder** format `.sql` files directly from the Explorer's right-click menu,
+without opening them first.
 
 ## Beyond rules
 

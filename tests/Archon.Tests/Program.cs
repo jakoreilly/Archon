@@ -5,6 +5,7 @@ using Archon.Core.Findings;
 using Archon.Core.Insights;
 using Archon.Core.Rules;
 using Archon.Core.Sources;
+using Archon.Core.Sql;
 using Archon.Rules;
 using Archon.Rules.CSharp;
 using Archon.Rules.Sql;
@@ -26,6 +27,7 @@ internal static class Program
 
         SqlWildcardRules(harness);
         SqlConventionRules(harness);
+        SqlFormatterRules(harness);
         SecurityHotspotRules(harness);
         ComplexityRules(harness);
         UnusedSymbolsRules(harness);
@@ -139,6 +141,58 @@ internal static class Program
         badPattern.Add("a.sql", "CREATE PROCEDURE dbo.DoThing AS SELECT 1;");
         harness.Equal("ignores a pattern that does not compile rather than failing the pass", 0,
             badPattern.Analyse().Findings.CountOf(SqlConventionRule.ProcedureNaming));
+    }
+
+    /// <summary>
+    /// Ported from Arch.Sql.Format's own test suite (the formatter's origin, before it was carried
+    /// into Archon): idempotency, byte-identical passthrough for SQL it cannot parse, and comment /
+    /// 'GO' separator retention. The one thing not ported is that source suite's semantic
+    /// round-trip test, which depends on an Arch-specific object analyzer Archon does not have.
+    /// </summary>
+    internal static void SqlFormatterRules(Harness harness)
+    {
+        harness.Group("SQL formatter");
+
+        string schema = FormatFixture("tsql_schema.sql");
+        string once = TSqlFormatter.Format(schema);
+        harness.Equal("formatting is idempotent", once, TSqlFormatter.Format(once));
+
+        string broken = FormatFixture("tsql_broken.sql");
+        harness.Equal("an unparseable file is returned byte-identical", broken, TSqlFormatter.Format(broken));
+
+        string commented = FormatFixture("commented.sql");
+        string formattedCommented = TSqlFormatter.Format(commented);
+        harness.Check("retains the file header comment",
+            formattedCommented.Contains("File header: this script creates the Widgets table"));
+        harness.Check("retains a per-object doc comment",
+            formattedCommented.Contains("Widgets: the core catalog table."));
+        harness.Check("retains a doc comment ahead of a later object",
+            formattedCommented.Contains("usp_GetWidget: fetch a single widget by id."));
+        harness.Check("keeps the GO batch separator", formattedCommented.Contains("GO"));
+        harness.Equal("comment preservation is itself idempotent",
+            formattedCommented, TSqlFormatter.Format(formattedCommented));
+
+        harness.Check("flags a comment sitting inside a statement",
+            TSqlFormatter.HasInlineComments(commented));
+        harness.Check("does not flag comments that only sit between statements",
+            !TSqlFormatter.HasInlineComments("-- header\nCREATE TABLE dbo.T (Id INT);\nGO\n-- footer\n"));
+    }
+
+    /// <summary>Walks up from the test binary to the repository root (marked by Archon.slnx), the
+    /// same way <see cref="Archon.Tests.Corpus.SnippetCorpusLocator"/> finds the vendored snippet
+    /// library, rather than copying fixtures into the output directory.</summary>
+    private static string FormatFixture(string name)
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "Archon.slnx")))
+            {
+                return File.ReadAllText(Path.Combine(directory.FullName, "tests", "Archon.Tests", "Corpus", "Format", name));
+            }
+            directory = directory.Parent;
+        }
+        throw new InvalidOperationException("could not find the repository root (Archon.slnx) above the test binary.");
     }
 
     internal static void SecurityHotspotRules(Harness harness)

@@ -8,6 +8,7 @@ using Archon.Core.Insights;
 using Archon.Core.Output;
 using Archon.Core.Rules;
 using Archon.Core.Sources;
+using Archon.Core.Sql;
 
 namespace Archon.Host;
 
@@ -95,6 +96,7 @@ internal static class Program
         "listRules" => ListRules(),
         "analyzeFile" => AnalyzeFile(parameters),
         "analyzeWorkspace" => AnalyzeWorkspace(),
+        "formatFile" => FormatFile(parameters),
         "methodImpact" => MethodImpact(parameters),
         "setSeverity" => SetSeverity(Required(parameters, "ruleId"), Required(parameters, "severity")),
         "invalidate" => Invalidate(parameters),
@@ -166,6 +168,31 @@ internal static class Program
             ? Session.Engine.AnalyseFileInProject(path, Session.DiscoverProjectOf(path), Session.Config, Session.Baseline)
             : Session.Engine.AnalyseFile(path, Session.Config, Session.Baseline);
         return Describe(result, path);
+    }
+
+    /// <summary>
+    /// Formats one T-SQL file and hands back the result; it never writes to disk itself. Text is
+    /// read the same way <see cref="AnalyzeFile"/> reads it, so a caller supplying unsaved editor
+    /// content gets that content formatted rather than whatever is on disk.
+    /// </summary>
+    private static JsonNode FormatFile(JsonNode? parameters)
+    {
+        string path = Path.GetFullPath(Required(parameters, "path"));
+        string? text = parameters?["text"]?.GetValue<string>();
+        if (text is not null)
+        {
+            Session.SetText(path, text);
+        }
+
+        string content = text ?? Session.Sources.GetText(path) ?? "";
+        string formatted = TSqlFormatter.Format(content);
+        return new JsonObject
+        {
+            ["path"] = path,
+            ["formatted"] = formatted,
+            ["changed"] = formatted != content,
+            ["hasInlineComments"] = TSqlFormatter.HasInlineComments(content)
+        };
     }
 
     /// <summary>

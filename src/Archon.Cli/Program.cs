@@ -6,6 +6,7 @@ using Archon.Core.Findings;
 using Archon.Core.Output;
 using Archon.Core.Rules;
 using Archon.Core.Sources;
+using Archon.Core.Sql;
 using Archon.Rules;
 
 namespace Archon.Cli;
@@ -20,6 +21,11 @@ internal static class Program
     private const int ExitClean = 0;
     private const int ExitFindings = 1;
     private const int ExitUsage = 2;
+
+    /// <summary>'format --check' found at least one file that would change. Matches the exit code
+    /// the standalone sqlfmt-tsql tool uses, so a CI step written against that tool needs no change
+    /// to run against 'archon format --check' instead.</summary>
+    private const int ExitWouldReformat = 3;
 
     /// <summary>
     /// Reported by <c>--version</c> and kept in step with the host and the extension by hand. It is
@@ -49,6 +55,7 @@ internal static class Program
             return args[0].ToLowerInvariant() switch
             {
                 "check" => RunCheck(args[1..]),
+                "format" => RunFormat(args[1..]),
                 "rules" => RunRules(args[1..]),
                 "baseline" => RunBaseline(args[1..]),
                 "explain" => RunExplain(args[1..]),
@@ -72,7 +79,7 @@ internal static class Program
 
     private static bool PathExists(string path) => Directory.Exists(path) || File.Exists(path);
 
-    private static readonly string[] CommandNames = { "check", "rules", "baseline", "explain", "init", "schema" };
+    private static readonly string[] CommandNames = { "check", "format", "rules", "baseline", "explain", "init", "schema" };
 
     private static int Unknown(string command)
     {
@@ -91,6 +98,7 @@ internal static class Program
 
             Commands:
               check [path]        Analyse a folder or file and report findings.
+              format [path]       Format a folder or file of T-SQL in place.
               rules [path]        List every registered rule and its effective severity.
               baseline [path]     Record current findings as accepted, so only new ones fail.
               explain <ruleId>    Describe one rule.
@@ -104,6 +112,10 @@ internal static class Program
               --no-baseline       Ignore the baseline file and report every finding.
               --output <file>     Write the report to a file instead of standard output.
 
+            Options for format:
+              --check             Report which files would change, without writing anything.
+                                   Exits 3 if any would, 0 if none would.
+
             Options for init:
               --force             Overwrite an existing .archon.json.
 
@@ -111,9 +123,10 @@ internal static class Program
               --output <file>     Write to a file instead of standard output.
 
             Exit codes:
-              0  no finding at or above the --fail-on level
+              0  no finding at or above the --fail-on level, or nothing 'format --check' would change
               1  at least one such finding
               2  the command could not run
+              3  'format --check' found at least one file that would change
 
             Configuration entries that Archon cannot act on — an unknown rule id, a severity it
             cannot parse, a layer name that matches nothing — are reported on standard error by
@@ -160,6 +173,85 @@ internal static class Program
             return ExitClean;
         }
         return result.CountAtLeast(options.FailOn.Value) > 0 ? ExitFindings : ExitClean;
+    }
+
+    /// <summary>
+    /// Formats every <c>*.sql</c> file under a path (or a single file directly) with
+    /// <see cref="TSqlFormatter"/> — the same formatter the editor's Format Document command and
+    /// the host's <c>formatFile</c> method use, so a file formatted here reads identically whether
+    /// it happened on save, from the command line or in CI.
+    /// </summary>
+    private static int RunFormat(string[] args)
+    {
+        if (args.Length > 0 && IsHelp(args[0]))
+        {
+            PrintUsage();
+            return ExitClean;
+        }
+
+        bool check = false;
+        string? path = null;
+        foreach (string argument in args)
+        {
+            if (argument == "--check")
+            {
+                check = true;
+            }
+            else if (argument.StartsWith('-'))
+            {
+                Console.Error.WriteLine($"archon: unknown option '{argument}' for format.");
+                return ExitUsage;
+            }
+            else
+            {
+                path = argument;
+            }
+        }
+        path ??= ".";
+
+        if (!PathExists(path))
+        {
+            Console.Error.WriteLine($"archon: '{path}' does not exist.");
+            return ExitUsage;
+        }
+
+        List<string> files = Directory.Exists(path)
+            ? Directory.EnumerateFiles(path, "*.sql", SearchOption.AllDirectories).ToList()
+            : new List<string> { path };
+
+        int changed = 0;
+        int unchanged = 0;
+        foreach (string file in files)
+        {
+            string content = File.ReadAllText(file);
+            string formatted = TSqlFormatter.Format(content);
+
+            if (TSqlFormatter.HasInlineComments(content))
+            {
+                Console.Error.WriteLine(
+                    $"archon: note: {file} has comment(s) inside a statement; those cannot be preserved by " +
+                    "the formatter and were dropped. Statement-level comments are kept.");
+            }
+
+            if (formatted == content)
+            {
+                unchanged++;
+                continue;
+            }
+
+            if (check)
+            {
+                Console.Error.WriteLine($"archon: would reformat: {file}");
+            }
+            else
+            {
+                File.WriteAllText(file, formatted);
+            }
+            changed++;
+        }
+
+        Console.WriteLine($"formatted: {changed} file(s), {unchanged} unchanged.");
+        return check && changed > 0 ? ExitWouldReformat : ExitClean;
     }
 
     private static int RunRules(string[] args)

@@ -67,6 +67,13 @@ export interface ImpactReply {
   elapsedMilliseconds: number;
 }
 
+export interface FormatReply {
+  path: string;
+  formatted: string;
+  changed: boolean;
+  hasInlineComments: boolean;
+}
+
 export interface InitializeReply {
   root: string;
   configPath: string | null;
@@ -216,6 +223,10 @@ export class ArchonClient {
 
   analyzeWorkspace(): Promise<AnalysisReply> {
     return this.send('analyzeWorkspace', undefined, WORKSPACE_TIMEOUT_MS);
+  }
+
+  formatFile(path: string, text?: string): Promise<FormatReply> {
+    return this.send('formatFile', text === undefined ? { path } : { path, text });
   }
 
   methodImpact(path: string, text: string | undefined, maxDepth: number): Promise<ImpactReply> {

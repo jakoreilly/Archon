@@ -2,6 +2,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { upsertRuleSeverity } from './archonConfigEdit';
 import { AnalysisReply, ArchonClient, FindingInfo, MethodImpactInfo, RuleInfo } from './client';
+import { SqlFormattingEditProvider } from './formatting';
 import { PerfHintCodeActionProvider } from './codeActions';
 import { DiffHunk } from './diff';
 import { FocusLensProvider, FocusMode } from './focus';
@@ -81,6 +82,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   focus = new FocusMode(log, updateReviewStatus);
   impactLens = new ImpactLensProvider(() => client, log);
   history = new HistoryHoverProvider(log, impactLens);
+  const formatting = new SqlFormattingEditProvider(() => client, log);
 
   context.subscriptions.push(
     output,
@@ -93,6 +95,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.languages.registerCodeLensProvider({ language: 'csharp', scheme: 'file' }, impactLens),
     vscode.languages.registerCodeLensProvider({ scheme: 'file' }, new FocusLensProvider(focus)),
     vscode.languages.registerHoverProvider({ scheme: 'file' }, history),
+    vscode.languages.registerDocumentFormattingEditProvider({ language: 'sql', scheme: 'file' }, formatting),
     vscode.languages.registerCodeActionsProvider(
       { language: 'csharp', scheme: 'file' },
       new PerfHintCodeActionProvider(),
@@ -118,6 +121,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ),
     vscode.commands.registerCommand('archon.analyzeFolder', (uri?: vscode.Uri, uris?: vscode.Uri[]) =>
       analyzeFolders(uri, uris)
+    ),
+    vscode.commands.registerCommand('archon.formatActiveFile', () => {
+      const editor = vscode.window.activeTextEditor;
+      if (editor && editor.document.languageId === 'sql') {
+        void vscode.commands.executeCommand('editor.action.formatDocument');
+      }
+    }),
+    vscode.commands.registerCommand('archon.formatFile', (uri?: vscode.Uri, uris?: vscode.Uri[]) =>
+      formatFiles(uri, uris)
+    ),
+    vscode.commands.registerCommand('archon.formatFolder', (uri?: vscode.Uri, uris?: vscode.Uri[]) =>
+      formatFolders(uri, uris)
     ),
     vscode.commands.registerCommand('archon.writeBaseline', writeBaseline),
     vscode.commands.registerCommand('archon.reload', reload),
@@ -525,6 +540,56 @@ async function analyzeFolders(uri?: vscode.Uri, uris?: vscode.Uri[]): Promise<vo
     }
   }
   await analyzeFiles(undefined, files);
+}
+
+/**
+ * Explorer context menu entry point for formatting one or more files in place. Reads each file
+ * through the editor so an unsaved buffer is formatted rather than what is on disk, and writes
+ * back only the files the formatter actually changed — an already-formatted or unparseable file
+ * is left untouched rather than rewritten byte-for-byte identically.
+ */
+async function formatFiles(uri?: vscode.Uri, uris?: vscode.Uri[]): Promise<void> {
+  if (!client?.isRunning) {
+    return;
+  }
+  const targets = uris && uris.length > 0 ? uris : uri ? [uri] : [];
+  let attempted = 0;
+  let changed = 0;
+  for (const target of targets) {
+    try {
+      const document = await vscode.workspace.openTextDocument(target);
+      if (document.languageId !== 'sql') {
+        continue;
+      }
+      attempted++;
+      const reply = await client.formatFile(target.fsPath, document.isDirty ? document.getText() : undefined);
+      if (reply.changed) {
+        await vscode.workspace.fs.writeFile(target, Buffer.from(reply.formatted, 'utf8'));
+        changed++;
+      }
+    } catch (error) {
+      log(`could not format ${target.fsPath}: ${describe(error)}`);
+    }
+  }
+  log(`formatted ${changed} of ${attempted} file(s).`);
+}
+
+/**
+ * Explorer context menu entry point for a folder (or multi-selected folders). Expands each folder
+ * to the '.sql' files it contains and reuses {@link formatFiles}, the same relationship
+ * {@link analyzeFolders} has to {@link analyzeFiles}.
+ */
+async function formatFolders(uri?: vscode.Uri, uris?: vscode.Uri[]): Promise<void> {
+  const folders = uris && uris.length > 0 ? uris : uri ? [uri] : [];
+  const files: vscode.Uri[] = [];
+  for (const folder of folders) {
+    try {
+      files.push(...(await vscode.workspace.findFiles(new vscode.RelativePattern(folder, '**/*.sql'))));
+    } catch (error) {
+      log(`could not scan ${folder.fsPath}: ${describe(error)}`);
+    }
+  }
+  await formatFiles(undefined, files);
 }
 
 async function analyzeWorkspace(): Promise<void> {

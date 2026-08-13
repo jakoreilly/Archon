@@ -60,6 +60,21 @@
         "icon": "$(search)"
       },
       {
+        "command": "archon.formatActiveFile",
+        "title": "Archon: Format Document",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "archon.formatFile",
+        "title": "Archon: Format File",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "archon.formatFolder",
+        "title": "Archon: Format Folder",
+        "icon": "$(edit)"
+      },
+      {
         "command": "archon.writeBaseline",
         "title": "Archon: Accept Current Findings As Baseline"
       },
@@ -177,6 +192,14 @@
           "when": "false"
         },
         {
+          "command": "archon.formatFile",
+          "when": "false"
+        },
+        {
+          "command": "archon.formatFolder",
+          "when": "false"
+        },
+        {
           "command": "archon.copyHunkReference",
           "when": "false"
         },
@@ -203,6 +226,16 @@
           "command": "archon.analyzeFolder",
           "when": "explorerResourceIsFolder",
           "group": "archon@1"
+        },
+        {
+          "command": "archon.formatFile",
+          "when": "resourceLangId == sql",
+          "group": "archon@2"
+        },
+        {
+          "command": "archon.formatFolder",
+          "when": "explorerResourceIsFolder",
+          "group": "archon@2"
         }
       ],
       "editor/title": [
@@ -219,24 +252,29 @@
           "group": "archon@1"
         },
         {
-          "command": "archon.toggleReviewMode",
-          "when": "resourceLangId == csharp || resourceLangId == sql",
+          "command": "archon.formatActiveFile",
+          "when": "resourceLangId == sql",
           "group": "archon@2"
         },
         {
-          "command": "archon.setReviewBaseRef",
+          "command": "archon.toggleReviewMode",
           "when": "resourceLangId == csharp || resourceLangId == sql",
           "group": "archon@3"
         },
         {
-          "command": "archon.explainLine",
+          "command": "archon.setReviewBaseRef",
           "when": "resourceLangId == csharp || resourceLangId == sql",
           "group": "archon@4"
         },
         {
+          "command": "archon.explainLine",
+          "when": "resourceLangId == csharp || resourceLangId == sql",
+          "group": "archon@5"
+        },
+        {
           "command": "archon.showCallersHere",
           "when": "resourceLangId == csharp",
-          "group": "archon@5"
+          "group": "archon@6"
         }
       ],
       "view/title": [
