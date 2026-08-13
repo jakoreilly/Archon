@@ -406,6 +406,18 @@ internal static class Program
             "class C { void M(Microsoft.EntityFrameworkCore.DbSet<int> orders) { orders.FromSqlRaw(\"SELECT * FROM Orders\"); } }");
         harness.Equal("does not flag FromSqlRaw given a plain literal", 0,
             fromSqlRawLiteral.Analyse().Findings.CountOf(SecurityHotspotRule.SqlInjectionRisk));
+
+        var commandTextParenthesizedLiteral = new TestWorkspace();
+        commandTextParenthesizedLiteral.Add("a.cs",
+            "class C { void M(System.Data.SqlClient.SqlCommand cmd) { cmd.CommandText = (\"SELECT Id \") + \"FROM dbo.Orders\"; } }");
+        harness.Equal("does not flag CommandText built from parenthesised literals only", 0,
+            commandTextParenthesizedLiteral.Analyse().Findings.CountOf(SecurityHotspotRule.SqlInjectionRisk));
+
+        var bareCommandText = new TestWorkspace();
+        bareCommandText.Add("a.cs",
+            "class C { string CommandText; void M(string table) { CommandText = \"SELECT * FROM \" + table; } }");
+        harness.Equal("does not flag a bare 'CommandText' with no receiver to judge it by", 0,
+            bareCommandText.Analyse().Findings.CountOf(SecurityHotspotRule.SqlInjectionRisk));
     }
 
     internal static void ComplexityRules(Harness harness)

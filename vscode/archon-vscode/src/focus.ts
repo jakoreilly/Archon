@@ -1,10 +1,10 @@
 import * as vscode from 'vscode';
-import { DiffHunk, DiffResult, changedLines, clearRenameCache, fileDiff, resolveBaseRef } from './diff';
+import { DiffHunk, DiffResult, NoDiffReason, changedLines, clearRenameCache, fileDiff, oneLine, resolveBaseRef } from './diff';
 import { findRepositoryRoot } from './git';
 
 interface FileFocus {
   hunks: DiffHunk[];
-  reason?: string;
+  reason?: NoDiffReason;
   detail?: string;
 }
 
@@ -215,7 +215,8 @@ export class FocusMode {
       return `the diff vs ${this.shortRef()} is too large to read`;
     }
     if (focus.reason === 'error') {
-      return `git failed comparing against ${this.shortRef()}${focus.detail ? ` — ${focus.detail}` : ''}`;
+      const detail = focus.detail ? ` — ${oneLine(focus.detail)}` : '';
+      return `git failed comparing against ${this.shortRef()}${detail}`;
     }
     if (focus.hunks.length === 0) {
       return `unchanged vs ${this.shortRef()}`;

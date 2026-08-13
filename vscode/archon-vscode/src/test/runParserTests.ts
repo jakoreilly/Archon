@@ -1,5 +1,5 @@
 import { upsertRuleSeverity } from '../archonConfigEdit';
-import { changedLines, parseDiffHunks, parseRenameNameStatus } from '../diff';
+import { changedLines, oneLine, parseDiffHunks, parseRenameNameStatus } from '../diff';
 import { describeAge, escapeMarkdown, findIssueKey, issueUrl, parseBlame, splitMessage } from '../history';
 
 let checks = 0;
@@ -44,6 +44,13 @@ const renames = parseRenameNameStatus('R079\told.txt\tnew.txt\nM\tunrelated.txt'
 equal('a rename line maps new path to old path', renames.get('new.txt'), 'old.txt');
 equal('a plain modify line contributes no rename', renames.has('unrelated.txt'), false);
 equal('an unmapped path has no rename source', parseRenameNameStatus('').get('anything.txt'), undefined);
+
+equal('a short single-line message passes through unchanged', oneLine('fatal: bad ref'), 'fatal: bad ref');
+equal('newlines and repeated whitespace collapse to single spaces',
+  oneLine('fatal: ambiguous argument\n\nUse \'--\' to separate'), "fatal: ambiguous argument Use '--' to separate");
+equal('a message past the max length is truncated with an ellipsis',
+  oneLine('x'.repeat(100), 10), `${'x'.repeat(9)}…`);
+equal('a message at exactly the max length is left untouched', oneLine('x'.repeat(10), 10), 'x'.repeat(10));
 
 const porcelain = [
   '9f3c1d4a5b6c7d8e9f0a1b2c3d4e5f6071829304 12 12 1',

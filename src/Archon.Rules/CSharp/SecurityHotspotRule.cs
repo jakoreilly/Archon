@@ -420,13 +420,11 @@ public sealed class SecurityHotspotRule : IRule
             {
                 continue;
             }
-            string? name = assignment.Left switch
-            {
-                IdentifierNameSyntax identifier => identifier.Identifier.Text,
-                MemberAccessExpressionSyntax member => member.Name.Identifier.Text,
-                _ => null
-            };
-            if (name != "CommandText" || !IsDynamicSqlExpression(assignment.Right, out string reason))
+            // Member access only (e.g. cmd.CommandText): a bare 'CommandText = ...' could just as
+            // easily be an unrelated local or property of the same name on a type with nothing to
+            // do with ADO.NET, and there is no receiver here to judge that from.
+            if (assignment.Left is not MemberAccessExpressionSyntax { Name.Identifier.Text: "CommandText" } ||
+                !IsDynamicSqlExpression(assignment.Right, out string reason))
             {
                 continue;
             }
@@ -493,6 +491,12 @@ public sealed class SecurityHotspotRule : IRule
 
     private static IEnumerable<ExpressionSyntax> FlattenAdditions(ExpressionSyntax expression)
     {
+        // Unwrapped first so a parenthesised literal, e.g. ("a") + "b", still reads as a literal
+        // operand instead of looking like a dynamic one merely for being wrapped.
+        while (expression is ParenthesizedExpressionSyntax parenthesized)
+        {
+            expression = parenthesized.Expression;
+        }
         if (expression is BinaryExpressionSyntax binary && binary.IsKind(SyntaxKind.AddExpression))
         {
             foreach (ExpressionSyntax operand in FlattenAdditions(binary.Left))
