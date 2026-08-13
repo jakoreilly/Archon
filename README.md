@@ -66,6 +66,7 @@ archon baseline [path]     Accept current findings, so only new ones fail.
 archon explain <ruleId>    Describe one rule.
 archon init [path]         Write a starter .archon.json and its schema.
 archon schema [path]       Print the JSON Schema for .archon.json.
+archon hotspots [path]     Rank C# files by complexity x churn. Needs a git repository.
 archon --version           Print the version.
 ```
 
@@ -74,7 +75,11 @@ archon --version           Print the version.
 change without writing them and exits `3` if any would — the same contract the standalone
 `sqlfmt-tsql` tool this was folded in from uses, so a CI step written against that tool needs no
 change to run against `archon format --check` instead. `init` takes `--force`, and `schema` takes
-`--output <file>`.
+`--output <file>`. `hotspots` takes `--days <n>` (default 180), `--top <n>` (default 20) and
+`--format console|json`; it multiplies each C# file's cognitive complexity by how many commits
+touched it in the window, so files that are both hard to follow and frequently edited surface
+first. Either signal alone is a weak predictor of risk — complex code nobody touches is stable —
+but the two together are the classic hotspot heuristic.
 
 Exit codes are `0` when nothing reached the `--fail-on` level, `1` when something did, and `2`
 when the command could not run. A pipeline step is usually:

@@ -3,11 +3,13 @@ using Archon.Core.Configuration;
 using Archon.Core.Engine;
 using Archon.Core.Explanations;
 using Archon.Core.Findings;
+using Archon.Core.Insights;
 using Archon.Core.Output;
 using Archon.Core.Rules;
 using Archon.Core.Sources;
 using Archon.Core.Sql;
 using Archon.Rules;
+using Archon.Rules.CSharp;
 
 namespace Archon.Cli;
 
@@ -61,6 +63,7 @@ internal static class Program
                 "explain" => RunExplain(args[1..]),
                 "init" => RunInit(args[1..]),
                 "schema" => RunSchema(args[1..]),
+                "hotspots" => RunHotspots(args[1..]),
                 _ => Unknown(args[0])
             };
         }
@@ -79,7 +82,7 @@ internal static class Program
 
     private static bool PathExists(string path) => Directory.Exists(path) || File.Exists(path);
 
-    private static readonly string[] CommandNames = { "check", "format", "rules", "baseline", "explain", "init", "schema" };
+    private static readonly string[] CommandNames = { "check", "format", "rules", "baseline", "explain", "init", "schema", "hotspots" };
 
     private static int Unknown(string command)
     {
@@ -104,6 +107,7 @@ internal static class Program
               explain <ruleId>    Describe one rule.
               init [path]         Write a starter .archon.json and its schema.
               schema [path]       Print the JSON Schema for .archon.json.
+              hotspots [path]     Rank C# files by complexity x churn. Needs a git repository.
               --version           Print the version and exit.
 
             Options for check:
@@ -121,6 +125,11 @@ internal static class Program
 
             Options for schema:
               --output <file>     Write to a file instead of standard output.
+
+            Options for hotspots:
+              --days <n>          How far back to count commits. Default 180.
+              --top <n>           How many files to show. Default 20.
+              --format <name>     console (default) or json.
 
             Exit codes:
               0  no finding at or above the --fail-on level, or nothing 'format --check' would change
@@ -474,6 +483,128 @@ internal static class Program
 
         ReportMessages(session);
         return ExitClean;
+    }
+
+    /// <summary>
+    /// Ranks C# files by cognitive complexity multiplied by how many commits touched them in the
+    /// window, so files that are both hard to follow and frequently edited surface first. Needs a
+    /// git repository; a workspace without one is told why rather than shown an empty table.
+    /// </summary>
+    private static int RunHotspots(string[] args)
+    {
+        if (args.Length > 0 && IsHelp(args[0]))
+        {
+            PrintUsage();
+            return ExitClean;
+        }
+
+        string path = ".";
+        int days = 180;
+        int top = 20;
+        bool json = false;
+        for (int i = 0; i < args.Length; i++)
+        {
+            string argument = args[i];
+            switch (argument)
+            {
+                case "--days":
+                    days = ParsePositiveInt(NextArg(args, ref i, "--days"), "--days");
+                    break;
+                case "--top":
+                    top = ParsePositiveInt(NextArg(args, ref i, "--top"), "--top");
+                    break;
+                case "--format":
+                    string value = NextArg(args, ref i, "--format");
+                    json = value.Equals("json", StringComparison.OrdinalIgnoreCase);
+                    if (!json && !value.Equals("console", StringComparison.OrdinalIgnoreCase) && !value.Equals("text", StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new ArgumentException($"unknown format '{value}'.");
+                    }
+                    break;
+                default:
+                    if (argument.StartsWith('-'))
+                    {
+                        Console.Error.WriteLine($"archon: unknown option '{argument}' for hotspots.");
+                        return ExitUsage;
+                    }
+                    path = argument;
+                    break;
+            }
+        }
+
+        if (!PathExists(path))
+        {
+            Console.Error.WriteLine($"archon: '{path}' does not exist.");
+            return ExitUsage;
+        }
+
+        string? repositoryRoot = GitHistory.FindRepositoryRoot(path);
+        if (repositoryRoot is null)
+        {
+            Console.Error.WriteLine("archon: hotspots needs a git repository; none was found.");
+            return ExitUsage;
+        }
+
+        Session session = Session.Create(path);
+        WorkspaceModel workspace = WorkspaceModel.Discover(path, session.Config.EffectiveExcludes());
+
+        var complexityByFile = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (SourceFile file in workspace.FilesOfLanguage(RuleLanguages.CSharp))
+        {
+            ParsedCSharp? parsed = session.Engine.Sources.GetCSharp(file.Path);
+            if (parsed is null)
+            {
+                continue;
+            }
+            string relative = System.IO.Path.GetRelativePath(repositoryRoot, file.Path).Replace('\\', '/');
+            complexityByFile[relative] = ComplexityRule.ScoreFile(parsed);
+        }
+
+        IReadOnlyDictionary<string, int> churnByFile = GitHistory.ChurnByFile(repositoryRoot, DateTimeOffset.UtcNow.AddDays(-days));
+        IReadOnlyList<HotspotEntry> ranked = HotspotAnalyzer.Rank(complexityByFile, churnByFile, top);
+
+        if (json)
+        {
+            var payload = ranked.Select(e => new { file = e.File, complexity = e.Complexity, churn = e.ChurnCommits, score = e.Score });
+            Console.WriteLine(JsonSerializer.Serialize(payload, new JsonSerializerOptions
+            {
+                WriteIndented = true,
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+            }));
+        }
+        else if (ranked.Count == 0)
+        {
+            Console.WriteLine($"No file was both scored and changed in the last {days} day(s).");
+        }
+        else
+        {
+            Console.WriteLine($"{"Score",-8} {"Complexity",-11} {"Churn",-6} File");
+            foreach (HotspotEntry entry in ranked)
+            {
+                Console.WriteLine($"{entry.Score,-8} {entry.Complexity,-11} {entry.ChurnCommits,-6} {entry.File}");
+            }
+        }
+
+        ReportMessages(session);
+        return ExitClean;
+    }
+
+    private static string NextArg(string[] args, ref int index, string option)
+    {
+        if (index + 1 >= args.Length)
+        {
+            throw new ArgumentException($"{option} needs a value.");
+        }
+        return args[++index];
+    }
+
+    private static int ParsePositiveInt(string value, string option)
+    {
+        if (!int.TryParse(value, out int parsed) || parsed <= 0)
+        {
+            throw new ArgumentException($"{option} needs a positive whole number.");
+        }
+        return parsed;
     }
 
     /// <summary>Parsed command-line options, with defaults chosen so that a bare command is safe.</summary>

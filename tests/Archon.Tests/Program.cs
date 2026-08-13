@@ -56,6 +56,8 @@ internal static class Program
         SnippetCatalogRules(harness);
         ConfigValidationRules(harness);
         ConfigSchemaRules(harness);
+        HotspotRankingRules(harness);
+        GitHistoryRules(harness);
 
         return harness.Report();
     }
@@ -434,6 +436,17 @@ internal static class Program
         belowOccurrenceThreshold.Add("a.cs", "class C { string A() => \"not found in catalog\"; string B() => \"not found in catalog\"; }");
         harness.Equal("does not flag a literal repeated only twice against the default minimum of three", 0,
             belowOccurrenceThreshold.Analyse().Findings.CountOf(ComplexityRule.DuplicatedStringLiteral));
+
+        harness.Group("Complexity: whole-file score for hotspot ranking");
+
+        var cache = new SourceCache();
+        string emptyPath = Path.Combine(Path.GetTempPath(), "archon-tests", "empty.cs");
+        cache.SetText(emptyPath, "class C { void M() { } }");
+        harness.Equal("a method with no branching scores zero", 0, ComplexityRule.ScoreFile(cache.GetCSharp(emptyPath)!));
+
+        string branchyPath = Path.Combine(Path.GetTempPath(), "archon-tests", "branchy.cs");
+        cache.SetText(branchyPath, "class C { void M(int x) { if (x > 0) { } } void N(int x) { if (x > 0) { } } }");
+        harness.Equal("two methods each scoring one sum to two, unfiltered by any threshold", 2, ComplexityRule.ScoreFile(cache.GetCSharp(branchyPath)!));
     }
 
     internal static void UnusedSymbolsRules(Harness harness)
@@ -2252,5 +2265,141 @@ internal static class Program
                 .TryGetProperty("SVC0001", out _));
 
         document.Dispose();
+    }
+
+    internal static void HotspotRankingRules(Harness harness)
+    {
+        harness.Group("Hotspot ranking: complexity x churn");
+
+        var complexity = new Dictionary<string, int>
+        {
+            ["Hot.cs"] = 10,
+            ["ComplexButStable.cs"] = 50,
+            ["ChurnyButSimple.cs"] = 1,
+            ["NeverChanged.cs"] = 30
+        };
+        var churn = new Dictionary<string, int>
+        {
+            ["Hot.cs"] = 8,
+            ["ComplexButStable.cs"] = 1,
+            ["ChurnyButSimple.cs"] = 20
+            // NeverChanged.cs absent: no commits in the window.
+        };
+
+        IReadOnlyList<HotspotEntry> ranked = HotspotAnalyzer.Rank(complexity, churn, top: 10);
+        harness.Equal("a file with no churn in the window is excluded even if complex", 3, ranked.Count);
+        harness.Equal("score is complexity times churn", 80, ranked.First(e => e.File == "Hot.cs").Score);
+        harness.Equal("the highest score sorts first", "Hot.cs", ranked[0].File);
+
+        IReadOnlyList<HotspotEntry> topOne = HotspotAnalyzer.Rank(complexity, churn, top: 1);
+        harness.Equal("'top' caps the result count", 1, topOne.Count);
+
+        var zeroComplexity = new Dictionary<string, int> { ["Trivial.cs"] = 0 };
+        var alwaysChurns = new Dictionary<string, int> { ["Trivial.cs"] = 100 };
+        harness.Equal("zero complexity is excluded regardless of churn", 0,
+            HotspotAnalyzer.Rank(zeroComplexity, alwaysChurns, top: 10).Count);
+    }
+
+    /// <summary>
+    /// Exercises <see cref="GitHistory"/> against a real repository built in a temp directory,
+    /// since its job is entirely about what the git binary reports. A machine without git on its
+    /// PATH is not expected in this project's own CI, so no attempt is made to skip gracefully.
+    /// </summary>
+    internal static void GitHistoryRules(Harness harness)
+    {
+        harness.Group("GitHistory: reading commit metadata via the git binary");
+
+        string root = Path.Combine(Path.GetTempPath(), "archon-tests-git-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            RunGitOrThrow(root, "init", "--initial-branch=main");
+            RunGitOrThrow(root, "config", "user.email", "test@example.com");
+            RunGitOrThrow(root, "config", "user.name", "Archon Tests");
+
+            File.WriteAllText(Path.Combine(root, "a.cs"), "class A { }");
+            RunGitOrThrow(root, "add", "a.cs");
+            RunGitOrThrow(root, "commit", "-m", "add a.cs");
+
+            File.WriteAllText(Path.Combine(root, "b.cs"), "class B { }");
+            RunGitOrThrow(root, "add", "b.cs");
+            RunGitOrThrow(root, "commit", "-m", "add b.cs");
+
+            File.WriteAllText(Path.Combine(root, "a.cs"), "class A { void M() { } }");
+            RunGitOrThrow(root, "add", "a.cs");
+            RunGitOrThrow(root, "commit", "-m", "touch a.cs again");
+
+            string? foundRoot = GitHistory.FindRepositoryRoot(root);
+            harness.Check("finds the repository root for a path inside it",
+                foundRoot is not null && Path.GetFullPath(foundRoot).TrimEnd('\\', '/')
+                    .Equals(Path.GetFullPath(root).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase));
+
+            harness.Check("a path outside any repository yields no root",
+                GitHistory.FindRepositoryRoot(Path.GetTempPath()) is null ||
+                !Path.GetFullPath(GitHistory.FindRepositoryRoot(Path.GetTempPath())!).StartsWith(root, StringComparison.OrdinalIgnoreCase));
+
+            IReadOnlyDictionary<string, int> churn = GitHistory.ChurnByFile(root, DateTimeOffset.UtcNow.AddDays(-1));
+            harness.Equal("a.cs was touched by two commits in the window", 2, churn.GetValueOrDefault("a.cs"));
+            harness.Equal("b.cs was touched by one commit in the window", 1, churn.GetValueOrDefault("b.cs"));
+
+            IReadOnlyDictionary<string, int> noChurn = GitHistory.ChurnByFile(root, DateTimeOffset.UtcNow.AddDays(1));
+            harness.Equal("a window starting in the future sees no commits", 0, noChurn.Count);
+
+            IReadOnlyList<GitHistory.FileCommit> commits = GitHistory.CommitsTouching(root, "a.cs");
+            harness.Equal("two commits touched a.cs", 2, commits.Count);
+
+            // -S matches every commit where the string's occurrence count changes, so both the
+            // commit that introduced "class A { }" and the later one that edited it away match;
+            // the oldest match (last, since git log lists newest first) is the introduction.
+            IReadOnlyList<GitHistory.FileCommit> pickaxe = GitHistory.CommitsTouching(root, "a.cs", pickaxe: "class A { }");
+            harness.Equal("pickaxe search matches both the commit that added the text and the one that changed it away", 2, pickaxe.Count);
+            harness.Equal("the oldest pickaxe match is the commit that introduced the text", commits[^1].Hash, pickaxe[^1].Hash);
+
+            string? shown = GitHistory.ShowFileAt(root, commits[^1].Hash, "a.cs");
+            harness.Equal("show reads a file's content as of the commit that introduced it", "class A { }", shown?.Trim());
+        }
+        finally
+        {
+            DeleteDirectoryRobustly(root);
+        }
+    }
+
+    private static void RunGitOrThrow(string workingDirectory, params string[] arguments)
+    {
+        var startInfo = new System.Diagnostics.ProcessStartInfo("git")
+        {
+            WorkingDirectory = workingDirectory,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        foreach (string argument in arguments)
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+        using System.Diagnostics.Process process = System.Diagnostics.Process.Start(startInfo)!;
+        process.StandardOutput.ReadToEnd();
+        string stderr = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"git {string.Join(' ', arguments)} failed: {stderr}");
+        }
+    }
+
+    private static void DeleteDirectoryRobustly(string path)
+    {
+        try
+        {
+            foreach (string file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
+            {
+                File.SetAttributes(file, FileAttributes.Normal);
+            }
+            Directory.Delete(path, recursive: true);
+        }
+        catch (IOException)
+        {
+            // Best effort: a stray handle on Windows should not fail the suite over a temp directory.
+        }
     }
 }

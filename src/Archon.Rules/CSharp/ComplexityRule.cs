@@ -94,12 +94,10 @@ public sealed class ComplexityRule : IRule
     {
         foreach (MethodDeclarationSyntax method in parsed.Root.DescendantNodes().OfType<MethodDeclarationSyntax>())
         {
-            if (method.Body is null && method.ExpressionBody is null)
+            if (!TryScoreMethod(method, out int score))
             {
                 continue;
             }
-            SyntaxNode body = method.Body is not null ? method.Body : method.ExpressionBody!.Expression;
-            int score = Walk(body, nesting: 0) + ScoreLogicalChains(body) + ScoreDirectRecursion(body, method.Identifier.Text);
             if (score <= threshold)
             {
                 continue;
@@ -107,6 +105,36 @@ public sealed class ComplexityRule : IRule
             yield return Create(CognitiveComplexity, parsed, method.Identifier.Span, filePath, "CognitiveComplexity",
                 $"'{method.Identifier.Text}' has a cognitive complexity of {score}, over the threshold of {threshold}. Extract named helpers for its branches.");
         }
+    }
+
+    /// <summary>
+    /// Sum of every method's cognitive complexity in a file, unfiltered by the reporting
+    /// threshold. Used by hotspot ranking, which cares about a file's total shape rather than
+    /// which individual methods happen to cross a configured line.
+    /// </summary>
+    public static int ScoreFile(ParsedCSharp parsed)
+    {
+        int total = 0;
+        foreach (MethodDeclarationSyntax method in parsed.Root.DescendantNodes().OfType<MethodDeclarationSyntax>())
+        {
+            if (TryScoreMethod(method, out int score))
+            {
+                total += score;
+            }
+        }
+        return total;
+    }
+
+    private static bool TryScoreMethod(MethodDeclarationSyntax method, out int score)
+    {
+        if (method.Body is null && method.ExpressionBody is null)
+        {
+            score = 0;
+            return false;
+        }
+        SyntaxNode body = method.Body is not null ? method.Body : method.ExpressionBody!.Expression;
+        score = Walk(body, nesting: 0) + ScoreLogicalChains(body) + ScoreDirectRecursion(body, method.Identifier.Text);
+        return true;
     }
 
     private static int Walk(SyntaxNode node, int nesting)
