@@ -23,10 +23,12 @@ node_modules/
 npm-debug.log*
 *.tsbuildinfo
 
-# Extension build output. `dist/` is the compiled TypeScript and `host/` the
-# published analysis binary: both are produced by `vscode:prepublish`.
+# Extension build output. `dist/` is the compiled TypeScript, `host/` the
+# published analysis binary, and `media/` the vendored Mermaid bundle: all three
+# are produced by `vscode:prepublish`.
 dist/
 vscode/archon-vscode/host/
+vscode/archon-vscode/media/
 *.vsix
 
 # Archon's own accepted-findings file, which is per-checkout

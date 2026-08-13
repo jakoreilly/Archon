@@ -44,9 +44,9 @@ export class ImpactLensProvider implements vscode.CodeLensProvider {
     const cached = this.cache.get(key);
     if (!cached || cached.version !== document.version) {
       void this.load(document, key);
-      return cached ? this.lensesFrom(cached.methods) : [];
+      return cached ? this.lensesFrom(cached.methods, document.uri) : [];
     }
-    return this.lensesFrom(cached.methods);
+    return this.lensesFrom(cached.methods, document.uri);
   }
 
   /**
@@ -54,7 +54,7 @@ export class ImpactLensProvider implements vscode.CodeLensProvider {
    * shown, because clearing the lenses on every keystroke makes them flicker in and out of the
    * gutter as the file is typed into.
    */
-  private lensesFrom(methods: MethodImpactInfo[]): vscode.CodeLens[] {
+  private lensesFrom(methods: MethodImpactInfo[], uri: vscode.Uri): vscode.CodeLens[] {
     const threshold = vscode.workspace
       .getConfiguration('archon')
       .get<number>('impact.minimumReferences', 1);
@@ -66,7 +66,7 @@ export class ImpactLensProvider implements vscode.CodeLensProvider {
         return new vscode.CodeLens(range, {
           title: describeImpact(method),
           command: 'archon.showCallers',
-          arguments: [method]
+          arguments: [method, uri]
         });
       });
   }
@@ -125,7 +125,7 @@ export class ImpactLensProvider implements vscode.CodeLensProvider {
  * Offers the call sites reaching a method. The list is what the graph actually found, so selecting an
  * entry navigates to a real line rather than to a reference the editor is asked to look up again.
  */
-export async function showCallers(method: MethodImpactInfo): Promise<void> {
+export async function showCallers(method: MethodImpactInfo, uri: vscode.Uri): Promise<void> {
   if (method.callers.length === 0) {
     vscode.window.showInformationMessage(
       `Archon found no calls to ${method.methodName}. It may be reached through an interface, a container or reflection, which this analysis cannot see.`
@@ -133,18 +133,28 @@ export async function showCallers(method: MethodImpactInfo): Promise<void> {
     return;
   }
 
-  const picked = await vscode.window.showQuickPick(
-    method.callers.map((caller) => ({
-      label: `${caller.methodName}`,
+  const items: ({ label: string; description: string } & ({ caller: CallerInfo } | { diagram: true }))[] = [
+    {
+      label: '$(type-hierarchy-sub) Show as call trace diagram',
+      description: 'Callers of callers, as a Mermaid diagram',
+      diagram: true
+    },
+    ...method.callers.map((caller) => ({
+      label: caller.methodName,
       description: `${vscode.workspace.asRelativePath(vscode.Uri.file(caller.file))}:${caller.line + 1}`,
       caller
-    })),
-    {
-      title: `Calls to ${method.methodName} — matched by name and argument count`,
-      matchOnDescription: true
-    }
-  );
+    }))
+  ];
+
+  const picked = await vscode.window.showQuickPick(items, {
+    title: `Calls to ${method.methodName} — matched by name and argument count`,
+    matchOnDescription: true
+  });
   if (!picked) {
+    return;
+  }
+  if ('diagram' in picked) {
+    await vscode.commands.executeCommand('archon.showCallTrace', method, uri);
     return;
   }
   await reveal(picked.caller);

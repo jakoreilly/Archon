@@ -67,6 +67,22 @@ export interface ImpactReply {
   elapsedMilliseconds: number;
 }
 
+export interface TraceEdgeInfo {
+  fromKey: string;
+  fromName: string;
+  toKey: string;
+  toName: string;
+}
+
+export interface TraceReply {
+  found: boolean;
+  rootKey?: string;
+  rootName?: string;
+  edges?: TraceEdgeInfo[];
+  bounded?: boolean;
+  elapsedMilliseconds: number;
+}
+
 export interface FormatReply {
   path: string;
   formatted: string;
@@ -231,6 +247,17 @@ export class ArchonClient {
 
   methodImpact(path: string, text: string | undefined, maxDepth: number): Promise<ImpactReply> {
     return this.send('methodImpact', text === undefined ? { path, maxDepth } : { path, text, maxDepth });
+  }
+
+  methodTrace(
+    path: string,
+    text: string | undefined,
+    line: number,
+    maxDepth: number,
+    maxNodes: number
+  ): Promise<TraceReply> {
+    const base = { path, line, maxDepth, maxNodes };
+    return this.send('methodTrace', text === undefined ? base : { ...base, text });
   }
 
   setSeverity(ruleId: string, severity: string): Promise<{ ruleId: string; severity: string }> {

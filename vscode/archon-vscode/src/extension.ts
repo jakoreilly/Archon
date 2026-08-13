@@ -10,6 +10,7 @@ import { forgetRepositoryRoots } from './git';
 import { describeAge } from './history';
 import { HistoryHoverProvider } from './historyHover';
 import { ImpactLensProvider, showCallers } from './impactLens';
+import { showCallTrace } from './callTrace';
 import { Node, RuleNode, RulesTreeProvider } from './rulesTree';
 import { SuppressionCodeActionProvider } from './suppressionActions';
 
@@ -155,8 +156,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('archon.nextChange', () => focus.jump(1)),
     vscode.commands.registerCommand('archon.previousChange', () => focus.jump(-1)),
     vscode.commands.registerCommand('archon.copyHunkReference', copyHunkReference),
-    vscode.commands.registerCommand('archon.showCallers', (method: MethodImpactInfo) => showCallers(method)),
+    vscode.commands.registerCommand('archon.showCallers', (method: MethodImpactInfo, uri: vscode.Uri) =>
+      showCallers(method, uri)
+    ),
     vscode.commands.registerCommand('archon.showCallersHere', showCallersHere),
+    vscode.commands.registerCommand('archon.showCallTrace', (method: MethodImpactInfo, uri: vscode.Uri) =>
+      showCallTrace(() => client, extensionContext.extensionUri, log, uri, method)
+    ),
     vscode.workspace.onDidSaveTextDocument((document) => {
       if (isSupported(document) && analysisTrigger() !== 'manual') {
         void analyzeDocument(document);
@@ -314,7 +320,7 @@ function showCallersHere(): void {
     vscode.window.showInformationMessage('Archon: place the cursor on a C# method declaration to show its callers.');
     return;
   }
-  void showCallers(method);
+  void showCallers(method, editor.document.uri);
 }
 
 async function copyHunkReference(uri: vscode.Uri, hunk: DiffHunk): Promise<void> {

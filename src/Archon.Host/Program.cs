@@ -98,6 +98,7 @@ internal static class Program
         "analyzeWorkspace" => AnalyzeWorkspace(),
         "formatFile" => FormatFile(parameters),
         "methodImpact" => MethodImpact(parameters),
+        "methodTrace" => MethodTrace(parameters),
         "setSeverity" => SetSeverity(Required(parameters, "ruleId"), Required(parameters, "severity")),
         "invalidate" => Invalidate(parameters),
         "reloadConfig" => ReloadConfig(),
@@ -264,6 +265,62 @@ internal static class Program
             ["methods"] = methods,
             ["graphMethodCount"] = result.MethodCount,
             ["graphFileCount"] = result.FileCount,
+            ["elapsedMilliseconds"] = stopwatch.ElapsedMilliseconds
+        };
+    }
+
+    /// <summary>
+    /// Traces the caller chain reaching one method, out to a bounded depth and node count, for a
+    /// diagram rather than a flat list — <see cref="MethodImpact"/> reports only direct callers per
+    /// method in a file, discarding the path a multi-hop view needs.
+    /// </summary>
+    private static JsonNode MethodTrace(JsonNode? parameters)
+    {
+        string path = Path.GetFullPath(Required(parameters, "path"));
+        string? text = parameters?["text"]?.GetValue<string>();
+        if (text is not null)
+        {
+            Session.SetText(path, text);
+        }
+
+        int line = parameters?["line"]?.GetValue<int>()
+            ?? throw new InvalidOperationException("methodTrace needs 'line'");
+        int maxDepth = parameters?["maxDepth"]?.GetValue<int>() ?? 6;
+        int maxNodes = parameters?["maxNodes"]?.GetValue<int>() ?? 60;
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        WorkspaceModel workspace = Session.DiscoverWorkspace();
+        TraceResult? result = Session.CallGraph.Trace(workspace, path, line, maxDepth, maxNodes);
+        stopwatch.Stop();
+
+        if (result is null)
+        {
+            return new JsonObject
+            {
+                ["found"] = false,
+                ["elapsedMilliseconds"] = stopwatch.ElapsedMilliseconds
+            };
+        }
+
+        var edges = new JsonArray();
+        foreach (TraceEdge edge in result.Edges)
+        {
+            edges.Add(new JsonObject
+            {
+                ["fromKey"] = edge.FromKey,
+                ["fromName"] = edge.FromName,
+                ["toKey"] = edge.ToKey,
+                ["toName"] = edge.ToName
+            });
+        }
+
+        return new JsonObject
+        {
+            ["found"] = true,
+            ["rootKey"] = result.RootKey,
+            ["rootName"] = result.RootName,
+            ["edges"] = edges,
+            ["bounded"] = result.Bounded,
             ["elapsedMilliseconds"] = stopwatch.ElapsedMilliseconds
         };
     }

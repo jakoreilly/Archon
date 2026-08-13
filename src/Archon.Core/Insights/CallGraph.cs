@@ -41,6 +41,16 @@ public sealed record MethodImpact(
 /// <summary>The impact of every method in one file, with the size of the graph it was measured against.</summary>
 public sealed record ImpactResult(IReadOnlyList<MethodImpact> Methods, int MethodCount, int FileCount);
 
+/// <summary>One "caller calls callee" edge discovered while walking backward from a target method.</summary>
+public sealed record TraceEdge(string FromKey, string FromName, string ToKey, string ToName);
+
+/// <summary>
+/// The caller chain reaching one method, out to a bounded depth and node count. <see cref="Bounded"/>
+/// marks a chain cut short by either bound, so a trace that stops at the edge of the graph is never
+/// mistaken for one that ran out of callers.
+/// </summary>
+public sealed record TraceResult(string RootKey, string RootName, IReadOnlyList<TraceEdge> Edges, bool Bounded);
+
 /// <summary>
 /// A reverse call graph over the whole workspace, held between requests and updated one file at a
 /// time.
@@ -153,6 +163,85 @@ public sealed class CallGraph
                     DescribeCallers(direct, maxCallers)));
             }
             return new ImpactResult(impacts, MethodCountLocked(), _methodsByFile.Count);
+        }
+    }
+
+    /// <summary>
+    /// Walks backward from the method declared on <paramref name="line"/>, collecting every "caller
+    /// calls callee" edge on the way, out to <paramref name="maxDepth"/> hops or <paramref name="maxNodes"/>
+    /// distinct methods, whichever comes first. Unlike <see cref="Impact"/>, which reports only the
+    /// direct callers of each method in a file, this keeps the path — the shape a caller-of-callers
+    /// diagram needs — at the cost of being scoped to one method rather than a whole file.
+    /// </summary>
+    public TraceResult? Trace(
+        WorkspaceModel workspace,
+        string filePath,
+        int line,
+        int maxDepth,
+        int maxNodes,
+        CancellationToken cancellationToken = default)
+    {
+        string target = Path.GetFullPath(filePath);
+        int depthLimit = Math.Max(1, maxDepth);
+        int nodeLimit = Math.Max(1, maxNodes);
+
+        lock (_gate)
+        {
+            Synchronise(workspace, cancellationToken);
+            if (!_methodsByFile.TryGetValue(target, out List<MethodNode>? methods))
+            {
+                return null;
+            }
+            MethodNode? root = methods.FirstOrDefault(m => m.Line == line);
+            if (root is null)
+            {
+                return null;
+            }
+
+            Dictionary<string, List<MethodNode>> callers = CallersByKey();
+            var nameByKey = new Dictionary<string, string>(StringComparer.Ordinal) { [root.Key] = root.Name };
+            var edges = new List<TraceEdge>();
+            var edgeKeys = new HashSet<string>(StringComparer.Ordinal);
+            var visited = new HashSet<string>(StringComparer.Ordinal) { root.Key };
+            var frontier = new Queue<(string Key, int Depth)>();
+            frontier.Enqueue((root.Key, 0));
+            bool bounded = false;
+
+            while (frontier.Count > 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                (string key, int depth) = frontier.Dequeue();
+                if (depth >= depthLimit)
+                {
+                    bounded |= callers.ContainsKey(key);
+                    continue;
+                }
+                if (!callers.TryGetValue(key, out List<MethodNode>? incoming))
+                {
+                    continue;
+                }
+
+                foreach (MethodNode caller in incoming)
+                {
+                    if (visited.Count >= nodeLimit && !visited.Contains(caller.Key))
+                    {
+                        bounded = true;
+                        break;
+                    }
+
+                    nameByKey[caller.Key] = caller.Name;
+                    if (edgeKeys.Add($"{caller.Key}=>{key}"))
+                    {
+                        edges.Add(new TraceEdge(caller.Key, caller.Name, key, nameByKey[key]));
+                    }
+                    if (visited.Add(caller.Key))
+                    {
+                        frontier.Enqueue((caller.Key, depth + 1));
+                    }
+                }
+            }
+
+            return new TraceResult(root.Key, root.Name, edges, bounded);
         }
     }
 

@@ -128,8 +128,8 @@ Rules needing the whole workspace run on **Archon: Analyse Whole Workspace**. Se
 
 Archon also registers as a formatter for `.sql`: **Format Document** (`Shift+Alt+F`) and
 `editor.formatOnSave` both work once Archon is picked as the default formatter for T-SQL, using
-the same loss-safe formatter `archon format` runs on the command line. **Archon: Format File** and
-**Archon: Format Folder** format `.sql` files directly from the Explorer's right-click menu,
+the same loss-safe formatter `archon format` runs on the command line. **Archon: Format SQL File** and
+**Archon: Format SQL Folder** format `.sql` files directly from the Explorer's right-click menu,
 without opening them first.
 
 ## Beyond rules

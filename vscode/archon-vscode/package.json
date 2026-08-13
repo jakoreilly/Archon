@@ -2,7 +2,7 @@
   "name": "archon-analysis",
   "displayName": "Archon for C# and SQL",
   "description": "Architecture, lifetime and SQL rules for C# and T-SQL, from one analysis process.",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "publisher": "jakoreilly",
   "license": "MIT",
   "icon": "icon.png",
@@ -61,17 +61,17 @@
       },
       {
         "command": "archon.formatActiveFile",
-        "title": "Archon: Format Document",
+        "title": "Archon: Format SQL Document",
         "icon": "$(edit)"
       },
       {
         "command": "archon.formatFile",
-        "title": "Archon: Format File",
+        "title": "Archon: Format SQL File",
         "icon": "$(edit)"
       },
       {
         "command": "archon.formatFolder",
-        "title": "Archon: Format Folder",
+        "title": "Archon: Format SQL Folder",
         "icon": "$(edit)"
       },
       {
@@ -150,6 +150,10 @@
         "icon": "$(references)"
       },
       {
+        "command": "archon.showCallTrace",
+        "title": "Archon: Show Call Trace Diagram"
+      },
+      {
         "command": "archon.setSeverityForRule",
         "title": "Archon: Set Severity For Rule"
       }
@@ -205,6 +209,10 @@
         },
         {
           "command": "archon.showCallers",
+          "when": "false"
+        },
+        {
+          "command": "archon.showCallTrace",
           "when": "false"
         },
         {
@@ -363,6 +371,12 @@
           "minimum": 1,
           "description": "How many calls to follow outwards when looking for covering tests. A count cut off by this limit is shown as a lower bound."
         },
+        "archon.trace.maxNodes": {
+          "type": "number",
+          "default": 60,
+          "minimum": 1,
+          "description": "The most methods to include in a call trace diagram. A trace cut off by this limit is marked as bounded rather than complete."
+        },
         "archon.history.enabled": {
           "type": "boolean",
           "default": true,
@@ -410,11 +424,13 @@
     "test": "tsc -p ./ && node ./dist/test/runParserTests.js",
     "watch": "tsc -watch -p ./",
     "publish-host": "dotnet publish ../../src/Archon.Host/Archon.Host.csproj -c Release -p:SatelliteResourceLanguages=en -o ./host",
-    "vscode:prepublish": "npm run publish-host && npm run compile"
+    "vendor-mermaid": "node ./tools/vendor-mermaid.js",
+    "vscode:prepublish": "npm run publish-host && npm run vendor-mermaid && npm run compile"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
+    "mermaid": "^11.16.1",
     "typescript": "^5.4.0"
   }
 }
