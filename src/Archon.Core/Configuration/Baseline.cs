@@ -58,14 +58,25 @@ public sealed class Baseline
         }
         try
         {
-            var entries = JsonSerializer.Deserialize<List<BaselineEntry>>(File.ReadAllText(path), Options);
-            return new Baseline(entries ?? new List<BaselineEntry>());
+            return Parse(File.ReadAllText(path));
         }
         catch (Exception ex) when (ex is JsonException or IOException)
         {
             error = $"Could not read baseline '{path}': {ex.Message}. Treating it as empty.";
             return Empty;
         }
+    }
+
+    /// <summary>
+    /// Parses baseline JSON already in hand — a historical revision read via <c>git show</c>,
+    /// for instance — without touching the filesystem. Throws on malformed JSON exactly as
+    /// deserialization would; a caller walking many revisions decides for itself whether one bad
+    /// revision should stop the walk or just be skipped.
+    /// </summary>
+    public static Baseline Parse(string json)
+    {
+        var entries = JsonSerializer.Deserialize<List<BaselineEntry>>(json, Options);
+        return new Baseline(entries ?? new List<BaselineEntry>());
     }
 
     public static void Save(string path, IEnumerable<Finding> findings, string workspaceRoot)

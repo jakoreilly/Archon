@@ -10,6 +10,7 @@ using Archon.Rules;
 using Archon.Rules.CSharp;
 using Archon.Rules.Sql;
 using Archon.Tests.Corpus;
+using Microsoft.SqlServer.TransactSql.ScriptDom;
 using ServiceConventionRules;
 
 namespace Archon.Tests;
@@ -56,6 +57,14 @@ internal static class Program
         SnippetCatalogRules(harness);
         ConfigValidationRules(harness);
         ConfigSchemaRules(harness);
+        HotspotRankingRules(harness);
+        GitHistoryRules(harness);
+        DebtRankingRules(harness);
+        GitHistoryChurnSinceRules(harness);
+        SchemaCatalogRules(harness);
+        SchemaAwareSqlRules(harness);
+        TrendAnalyzerRules(harness);
+        BaselineHistoryReadingRules(harness);
 
         return harness.Report();
     }
@@ -434,6 +443,17 @@ internal static class Program
         belowOccurrenceThreshold.Add("a.cs", "class C { string A() => \"not found in catalog\"; string B() => \"not found in catalog\"; }");
         harness.Equal("does not flag a literal repeated only twice against the default minimum of three", 0,
             belowOccurrenceThreshold.Analyse().Findings.CountOf(ComplexityRule.DuplicatedStringLiteral));
+
+        harness.Group("Complexity: whole-file score for hotspot ranking");
+
+        var cache = new SourceCache();
+        string emptyPath = Path.Combine(Path.GetTempPath(), "archon-tests", "empty.cs");
+        cache.SetText(emptyPath, "class C { void M() { } }");
+        harness.Equal("a method with no branching scores zero", 0, ComplexityRule.ScoreFile(cache.GetCSharp(emptyPath)!));
+
+        string branchyPath = Path.Combine(Path.GetTempPath(), "archon-tests", "branchy.cs");
+        cache.SetText(branchyPath, "class C { void M(int x) { if (x > 0) { } } void N(int x) { if (x > 0) { } } }");
+        harness.Equal("two methods each scoring one sum to two, unfiltered by any threshold", 2, ComplexityRule.ScoreFile(cache.GetCSharp(branchyPath)!));
     }
 
     internal static void UnusedSymbolsRules(Harness harness)
@@ -1569,8 +1589,8 @@ internal static class Program
         var registry = new RuleRegistry();
         registry.Add(new BuiltInRulePack());
 
-        harness.Equal("every built-in condition is registered", 32, registry.Descriptors.Count);
-        harness.Equal("rules that report several conditions are counted once as rules", 12, registry.Rules.Count);
+        harness.Equal("every built-in condition is registered", 33, registry.Descriptors.Count);
+        harness.Equal("rules that report several conditions are counted once as rules", 13, registry.Rules.Count);
         harness.Check("a descriptor can be found by id", registry.Find(SelectStarRule.Id) is not null);
         harness.Check("an unknown id resolves to nothing", registry.Find("ZZ9999") is null);
         harness.Check("registering the same pack twice is refused rather than duplicated",
@@ -2252,5 +2272,416 @@ internal static class Program
                 .TryGetProperty("SVC0001", out _));
 
         document.Dispose();
+    }
+
+    internal static void HotspotRankingRules(Harness harness)
+    {
+        harness.Group("Hotspot ranking: complexity x churn");
+
+        var complexity = new Dictionary<string, int>
+        {
+            ["Hot.cs"] = 10,
+            ["ComplexButStable.cs"] = 50,
+            ["ChurnyButSimple.cs"] = 1,
+            ["NeverChanged.cs"] = 30
+        };
+        var churn = new Dictionary<string, int>
+        {
+            ["Hot.cs"] = 8,
+            ["ComplexButStable.cs"] = 1,
+            ["ChurnyButSimple.cs"] = 20
+            // NeverChanged.cs absent: no commits in the window.
+        };
+
+        IReadOnlyList<HotspotEntry> ranked = HotspotAnalyzer.Rank(complexity, churn, top: 10);
+        harness.Equal("a file with no churn in the window is excluded even if complex", 3, ranked.Count);
+        harness.Equal("score is complexity times churn", 80, ranked.First(e => e.File == "Hot.cs").Score);
+        harness.Equal("the highest score sorts first", "Hot.cs", ranked[0].File);
+
+        IReadOnlyList<HotspotEntry> topOne = HotspotAnalyzer.Rank(complexity, churn, top: 1);
+        harness.Equal("'top' caps the result count", 1, topOne.Count);
+
+        var zeroComplexity = new Dictionary<string, int> { ["Trivial.cs"] = 0 };
+        var alwaysChurns = new Dictionary<string, int> { ["Trivial.cs"] = 100 };
+        harness.Equal("zero complexity is excluded regardless of churn", 0,
+            HotspotAnalyzer.Rank(zeroComplexity, alwaysChurns, top: 10).Count);
+    }
+
+    /// <summary>
+    /// Exercises <see cref="GitHistory"/> against a real repository built in a temp directory,
+    /// since its job is entirely about what the git binary reports. A machine without git on its
+    /// PATH is not expected in this project's own CI, so no attempt is made to skip gracefully.
+    /// </summary>
+    internal static void GitHistoryRules(Harness harness)
+    {
+        harness.Group("GitHistory: reading commit metadata via the git binary");
+
+        string root = Path.Combine(Path.GetTempPath(), "archon-tests-git-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            RunGitOrThrow(root, "init", "--initial-branch=main");
+            RunGitOrThrow(root, "config", "user.email", "test@example.com");
+            RunGitOrThrow(root, "config", "user.name", "Archon Tests");
+
+            File.WriteAllText(Path.Combine(root, "a.cs"), "class A { }");
+            RunGitOrThrow(root, "add", "a.cs");
+            RunGitOrThrow(root, "commit", "-m", "add a.cs");
+
+            File.WriteAllText(Path.Combine(root, "b.cs"), "class B { }");
+            RunGitOrThrow(root, "add", "b.cs");
+            RunGitOrThrow(root, "commit", "-m", "add b.cs");
+
+            File.WriteAllText(Path.Combine(root, "a.cs"), "class A { void M() { } }");
+            RunGitOrThrow(root, "add", "a.cs");
+            RunGitOrThrow(root, "commit", "-m", "touch a.cs again");
+
+            string? foundRoot = GitHistory.FindRepositoryRoot(root);
+            harness.Check("finds the repository root for a path inside it",
+                foundRoot is not null && Path.GetFullPath(foundRoot).TrimEnd('\\', '/')
+                    .Equals(Path.GetFullPath(root).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase));
+
+            harness.Check("a path outside any repository yields no root",
+                GitHistory.FindRepositoryRoot(Path.GetTempPath()) is null ||
+                !Path.GetFullPath(GitHistory.FindRepositoryRoot(Path.GetTempPath())!).StartsWith(root, StringComparison.OrdinalIgnoreCase));
+
+            IReadOnlyDictionary<string, int> churn = GitHistory.ChurnByFile(root, DateTimeOffset.UtcNow.AddDays(-1));
+            harness.Equal("a.cs was touched by two commits in the window", 2, churn.GetValueOrDefault("a.cs"));
+            harness.Equal("b.cs was touched by one commit in the window", 1, churn.GetValueOrDefault("b.cs"));
+
+            IReadOnlyDictionary<string, int> noChurn = GitHistory.ChurnByFile(root, DateTimeOffset.UtcNow.AddDays(1));
+            harness.Equal("a window starting in the future sees no commits", 0, noChurn.Count);
+
+            IReadOnlyList<GitHistory.FileCommit> commits = GitHistory.CommitsTouching(root, "a.cs");
+            harness.Equal("two commits touched a.cs", 2, commits.Count);
+
+            // -S matches every commit where the string's occurrence count changes, so both the
+            // commit that introduced "class A { }" and the later one that edited it away match;
+            // the oldest match (last, since git log lists newest first) is the introduction.
+            IReadOnlyList<GitHistory.FileCommit> pickaxe = GitHistory.CommitsTouching(root, "a.cs", pickaxe: "class A { }");
+            harness.Equal("pickaxe search matches both the commit that added the text and the one that changed it away", 2, pickaxe.Count);
+            harness.Equal("the oldest pickaxe match is the commit that introduced the text", commits[^1].Hash, pickaxe[^1].Hash);
+
+            string? shown = GitHistory.ShowFileAt(root, commits[^1].Hash, "a.cs");
+            harness.Equal("show reads a file's content as of the commit that introduced it", "class A { }", shown?.Trim());
+        }
+        finally
+        {
+            DeleteDirectoryRobustly(root);
+        }
+    }
+
+    private static void RunGitOrThrow(string workingDirectory, params string[] arguments)
+    {
+        var startInfo = new System.Diagnostics.ProcessStartInfo("git")
+        {
+            WorkingDirectory = workingDirectory,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        foreach (string argument in arguments)
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+        using System.Diagnostics.Process process = System.Diagnostics.Process.Start(startInfo)!;
+        process.StandardOutput.ReadToEnd();
+        string stderr = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"git {string.Join(' ', arguments)} failed: {stderr}");
+        }
+    }
+
+    private static void DeleteDirectoryRobustly(string path)
+    {
+        try
+        {
+            foreach (string file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
+            {
+                File.SetAttributes(file, FileAttributes.Normal);
+            }
+            Directory.Delete(path, recursive: true);
+        }
+        catch (IOException)
+        {
+            // Best effort: a stray handle on Windows should not fail the suite over a temp directory.
+        }
+    }
+
+    internal static void DebtRankingRules(Harness harness)
+    {
+        harness.Group("Debt ranking: baseline age x churn since acceptance");
+
+        DateTimeOffset now = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var entries = new List<BaselineEntry>
+        {
+            new() { Fingerprint = "old-and-churny", RuleId = "AR0001", File = "a.cs", Message = "m" },
+            new() { Fingerprint = "old-but-stable", RuleId = "AR0002", File = "b.cs", Message = "m" },
+            new() { Fingerprint = "no-history-found", RuleId = "AR0003", File = "c.cs", Message = "m" }
+        };
+        var introduced = new Dictionary<string, DateTimeOffset>
+        {
+            ["old-and-churny"] = now.AddDays(-100),
+            ["old-but-stable"] = now.AddDays(-200)
+            // "no-history-found" deliberately absent.
+        };
+        var churn = new Dictionary<string, int>
+        {
+            ["old-and-churny"] = 10,
+            ["old-but-stable"] = 1
+            // "no-history-found" deliberately absent: GetValueOrDefault yields zero.
+        };
+
+        IReadOnlyList<DebtEntry> ranked = DebtAnalyzer.Rank(entries, introduced, churn, now);
+        harness.Equal("every baseline entry is represented, even ones history could not date", 3, ranked.Count);
+        harness.Equal("age x churn outranks mere age", "old-and-churny", ranked[0].Fingerprint);
+        harness.Equal("an entry with no history found ages as zero rather than guessed", 0,
+            ranked.First(e => e.Fingerprint == "no-history-found").AgeDays);
+        harness.Check("an entry with no history found has a null introduced date",
+            ranked.First(e => e.Fingerprint == "no-history-found").Introduced is null);
+        harness.Equal("age in days matches the gap to 'now'", 100,
+            ranked.First(e => e.Fingerprint == "old-and-churny").AgeDays);
+        harness.Equal("score is age in days times churn", 1000,
+            ranked.First(e => e.Fingerprint == "old-and-churny").Score);
+    }
+
+    internal static void GitHistoryChurnSinceRules(Harness harness)
+    {
+        harness.Group("GitHistory: commit count since a point in time");
+
+        string root = Path.Combine(Path.GetTempPath(), "archon-tests-git-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            RunGitOrThrow(root, "init", "--initial-branch=main");
+            RunGitOrThrow(root, "config", "user.email", "test@example.com");
+            RunGitOrThrow(root, "config", "user.name", "Archon Tests");
+
+            File.WriteAllText(Path.Combine(root, "a.cs"), "v1");
+            RunGitOrThrow(root, "add", "a.cs");
+            RunGitOrThrow(root, "commit", "-m", "v1");
+
+            // Git commit timestamps have one-second resolution; without this gap, "now" can land
+            // in the same second as the v1 commit and be counted as at-or-after it.
+            Thread.Sleep(1100);
+            DateTimeOffset beforeSecondCommit = DateTimeOffset.UtcNow;
+
+            File.WriteAllText(Path.Combine(root, "a.cs"), "v2");
+            RunGitOrThrow(root, "add", "a.cs");
+            RunGitOrThrow(root, "commit", "-m", "v2");
+
+            File.WriteAllText(Path.Combine(root, "a.cs"), "v3");
+            RunGitOrThrow(root, "add", "a.cs");
+            RunGitOrThrow(root, "commit", "-m", "v3");
+
+            harness.Equal("counts every commit touching the file since the given time", 2,
+                GitHistory.CommitCountSince(root, "a.cs", beforeSecondCommit));
+            harness.Equal("a window starting after every commit counts zero", 0,
+                GitHistory.CommitCountSince(root, "a.cs", DateTimeOffset.UtcNow.AddDays(1)));
+        }
+        finally
+        {
+            DeleteDirectoryRobustly(root);
+        }
+    }
+
+    internal static void TrendAnalyzerRules(Harness harness)
+    {
+        harness.Group("Trend analysis: baseline history as a time series");
+
+        DateTimeOffset t0 = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var snapshots = new List<BaselineSnapshot>
+        {
+            new("c1", t0, new List<BaselineEntry>
+            {
+                new() { Fingerprint = "a", RuleId = "AR0060", File = "x.cs", Message = "m" }
+            }),
+            new("c2", t0.AddDays(1), new List<BaselineEntry>
+            {
+                new() { Fingerprint = "a", RuleId = "AR0060", File = "x.cs", Message = "m" },
+                new() { Fingerprint = "b", RuleId = "AR0060", File = "y.cs", Message = "m" },
+                new() { Fingerprint = "c", RuleId = "AR0074", File = "z.cs", Message = "m" }
+            }),
+            new("c3", t0.AddDays(2), new List<BaselineEntry>
+            {
+                new() { Fingerprint = "a", RuleId = "AR0060", File = "x.cs", Message = "m" }
+            })
+        };
+
+        IReadOnlyList<TrendPoint> points = TrendAnalyzer.Summarize(snapshots);
+        harness.Equal("one point per snapshot", 3, points.Count);
+        harness.Equal("the first point has no previous point to delta against", 0, points[0].DeltaFromPrevious);
+        harness.Equal("the second point's delta reflects two new entries", 2, points[1].DeltaFromPrevious);
+        harness.Equal("a later point can show debt being paid down as a negative delta", -2, points[2].DeltaFromPrevious);
+        harness.Equal("entries are grouped by rule id within a snapshot", 2, points[1].ByRule["AR0060"]);
+        harness.Equal("a rule with one entry in a snapshot is counted once", 1, points[1].ByRule["AR0074"]);
+        harness.Check("a rule absent from a snapshot is absent from its breakdown, not present as zero",
+            !points[2].ByRule.ContainsKey("AR0074"));
+    }
+
+    /// <summary>
+    /// Exercises the trend command's real dependency: reading the baseline file's own git history
+    /// via <see cref="GitHistory"/> and parsing each revision with <see cref="Baseline.Parse"/>.
+    /// </summary>
+    internal static void BaselineHistoryReadingRules(Harness harness)
+    {
+        harness.Group("Reading baseline history from git");
+
+        string root = Path.Combine(Path.GetTempPath(), "archon-tests-git-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            RunGitOrThrow(root, "init", "--initial-branch=main");
+            RunGitOrThrow(root, "config", "user.email", "test@example.com");
+            RunGitOrThrow(root, "config", "user.name", "Archon Tests");
+
+            string baselinePath = Path.Combine(root, ".archon-baseline.json");
+            File.WriteAllText(baselinePath, """[{"fingerprint":"a","ruleId":"AR0060","file":"x.cs","message":"m"}]""");
+            RunGitOrThrow(root, "add", ".archon-baseline.json");
+            RunGitOrThrow(root, "commit", "-m", "baseline: one entry");
+
+            File.WriteAllText(baselinePath, """
+                [
+                  {"fingerprint":"a","ruleId":"AR0060","file":"x.cs","message":"m"},
+                  {"fingerprint":"b","ruleId":"AR0074","file":"y.cs","message":"m"}
+                ]
+                """);
+            RunGitOrThrow(root, "add", ".archon-baseline.json");
+            RunGitOrThrow(root, "commit", "-m", "baseline: add one more");
+
+            IReadOnlyList<GitHistory.FileCommit> commits =
+                GitHistory.CommitsTouching(root, ".archon-baseline.json");
+            harness.Equal("two commits touched the baseline file", 2, commits.Count);
+
+            var snapshots = new List<BaselineSnapshot>();
+            foreach (GitHistory.FileCommit commit in commits.Reverse())
+            {
+                string? content = GitHistory.ShowFileAt(root, commit.Hash, ".archon-baseline.json");
+                harness.Check("show reads content for every commit touching the file", content is not null);
+                Baseline parsed = Baseline.Parse(content!);
+                snapshots.Add(new BaselineSnapshot(commit.Hash, commit.When, parsed.Entries));
+            }
+
+            IReadOnlyList<TrendPoint> points = TrendAnalyzer.Summarize(snapshots);
+            harness.Equal("the oldest revision had one entry", 1, points[0].Total);
+            harness.Equal("the newest revision had two", 2, points[1].Total);
+            harness.Equal("the delta between them is one", 1, points[1].DeltaFromPrevious);
+        }
+        finally
+        {
+            DeleteDirectoryRobustly(root);
+        }
+    }
+
+    internal static void SchemaCatalogRules(Harness harness)
+    {
+        harness.Group("SchemaCatalog: table/column model from parsed DDL");
+
+        static TSqlFragment Parse(string sql)
+        {
+            var parser = new TSql150Parser(initialQuotedIdentifiers: true);
+            using var reader = new StringReader(sql);
+            TSqlFragment fragment = parser.Parse(reader, out IList<ParseError> errors);
+            if (errors.Count > 0)
+            {
+                throw new InvalidOperationException($"test fixture did not parse: {errors[0].Message}");
+            }
+            return fragment;
+        }
+
+        var catalog = SchemaCatalog.Build(new[] { Parse("CREATE TABLE dbo.Orders (Id int, CustomerId int, Total decimal);") });
+        TableSchema? orders = catalog.Find("dbo", "Orders");
+        harness.Check("finds a table defined with an explicit schema", orders is not null);
+        harness.Check("knows a real column exists", orders!.HasColumn("CustomerId"));
+        harness.Check("column lookup is case-insensitive", orders.HasColumn("customerid"));
+        harness.Check("does not invent a column that was never defined", !orders.HasColumn("Bogus"));
+
+        var unqualified = SchemaCatalog.Build(new[] { Parse("CREATE TABLE Widgets (Id int);") });
+        harness.Check("an unqualified table name defaults to the dbo schema",
+            unqualified.Find("dbo", "Widgets") is not null);
+
+        var acrossFiles = SchemaCatalog.Build(new[]
+        {
+            Parse("CREATE TABLE dbo.A (Id int);"),
+            Parse("CREATE TABLE dbo.B (Id int);")
+        });
+        harness.Check("a table from a second fragment is present alongside the first",
+            acrossFiles.Find("dbo", "A") is not null && acrossFiles.Find("dbo", "B") is not null);
+
+        var withTemp = SchemaCatalog.Build(new[] { Parse("CREATE PROCEDURE dbo.P AS CREATE TABLE #Scratch (Id int);") });
+        harness.Check("a temp table declared inside a procedure body is not added to the catalog",
+            withTemp.Find("dbo", "#Scratch") is null);
+
+        harness.Check("an unknown table returns null rather than an empty TableSchema",
+            SchemaCatalog.Empty.Find("dbo", "Nothing") is null);
+    }
+
+    internal static void SchemaAwareSqlRules(Harness harness)
+    {
+        harness.Group("Schema-aware inline SQL: unknown column detection");
+
+        var ddl = "CREATE TABLE dbo.Orders (Id int, CustomerId int, Total decimal);";
+
+        var unknownSelect = new TestWorkspace();
+        unknownSelect.Add("schema.sql", ddl);
+        unknownSelect.Add("a.cs", "class C { void M() { var sql = \"SELECT Id, Bogus FROM dbo.Orders\"; } }");
+        harness.Equal("flags an unknown column in a SELECT list", 1,
+            unknownSelect.Analyse().Findings.CountOf(SchemaAwareSqlRule.UnknownColumn));
+
+        var knownSelect = new TestWorkspace();
+        knownSelect.Add("schema.sql", ddl);
+        knownSelect.Add("a.cs", "class C { void M() { var sql = \"SELECT Id, CustomerId FROM dbo.Orders\"; } }");
+        harness.Equal("does not flag columns that exist", 0,
+            knownSelect.Analyse().Findings.CountOf(SchemaAwareSqlRule.UnknownColumn));
+
+        var joinedSelect = new TestWorkspace();
+        joinedSelect.Add("schema.sql", ddl + " CREATE TABLE dbo.Customers (Id int);");
+        joinedSelect.Add("a.cs", "class C { void M() { var sql = \"SELECT Bogus FROM dbo.Orders o JOIN dbo.Customers c ON o.CustomerId = c.Id\"; } }");
+        harness.Equal("a multi-table FROM clause is skipped entirely, even with a genuinely unknown column", 0,
+            joinedSelect.Analyse().Findings.CountOf(SchemaAwareSqlRule.UnknownColumn));
+
+        var unknownTable = new TestWorkspace();
+        unknownTable.Add("schema.sql", ddl);
+        unknownTable.Add("a.cs", "class C { void M() { var sql = \"SELECT Bogus FROM dbo.NotInAnyDdl\"; } }");
+        harness.Equal("a table absent from the catalog is skipped, not flagged as missing", 0,
+            unknownTable.Analyse().Findings.CountOf(SchemaAwareSqlRule.UnknownColumn));
+
+        var selectStar = new TestWorkspace();
+        selectStar.Add("schema.sql", ddl);
+        selectStar.Add("a.cs", "class C { void M() { var sql = \"SELECT * FROM dbo.Orders\"; } }");
+        harness.Equal("SELECT * has no column list to check (AR0023's job, not this rule's)", 0,
+            selectStar.Analyse().Findings.CountOf(SchemaAwareSqlRule.UnknownColumn));
+
+        var unknownInsert = new TestWorkspace();
+        unknownInsert.Add("schema.sql", ddl);
+        unknownInsert.Add("a.cs", "class C { void M() { var sql = \"INSERT INTO dbo.Orders (Id, Bogus) VALUES (1, 2)\"; } }");
+        harness.Equal("flags an unknown column in an INSERT column list", 1,
+            unknownInsert.Analyse().Findings.CountOf(SchemaAwareSqlRule.UnknownColumn));
+
+        var insertNoColumnList = new TestWorkspace();
+        insertNoColumnList.Add("schema.sql", ddl);
+        insertNoColumnList.Add("a.cs", "class C { void M() { var sql = \"INSERT INTO dbo.Orders VALUES (1, 2, 3)\"; } }");
+        harness.Equal("an INSERT with no explicit column list is skipped, never guessed at positionally", 0,
+            insertNoColumnList.Analyse().Findings.CountOf(SchemaAwareSqlRule.UnknownColumn));
+
+        var unknownUpdate = new TestWorkspace();
+        unknownUpdate.Add("schema.sql", ddl);
+        unknownUpdate.Add("a.cs", "class C { void M() { var sql = \"UPDATE dbo.Orders SET Bogus = 1 WHERE Id = 1\"; } }");
+        harness.Equal("flags an unknown column in an UPDATE SET clause", 1,
+            unknownUpdate.Analyse().Findings.CountOf(SchemaAwareSqlRule.UnknownColumn));
+
+        var updateWithFrom = new TestWorkspace();
+        updateWithFrom.Add("schema.sql", ddl + " CREATE TABLE dbo.Customers (Id int);");
+        updateWithFrom.Add("a.cs", "class C { void M() { var sql = \"UPDATE dbo.Orders SET Bogus = 1 FROM dbo.Orders o JOIN dbo.Customers c ON o.CustomerId = c.Id\"; } }");
+        harness.Equal("an UPDATE with its own FROM/JOIN is skipped entirely", 0,
+            updateWithFrom.Analyse().Findings.CountOf(SchemaAwareSqlRule.UnknownColumn));
+
+        var disabled = new TestWorkspace().WithSeverity(SchemaAwareSqlRule.UnknownColumn, "off");
+        disabled.Add("schema.sql", ddl);
+        disabled.Add("a.cs", "class C { void M() { var sql = \"SELECT Bogus FROM dbo.Orders\"; } }");
+        harness.Equal("honours 'AR0080': 'off'", 0,
+            disabled.Analyse().Findings.CountOf(SchemaAwareSqlRule.UnknownColumn));
     }
 }

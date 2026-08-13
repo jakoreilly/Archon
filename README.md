@@ -66,6 +66,9 @@ archon baseline [path]     Accept current findings, so only new ones fail.
 archon explain <ruleId>    Describe one rule.
 archon init [path]         Write a starter .archon.json and its schema.
 archon schema [path]       Print the JSON Schema for .archon.json.
+archon hotspots [path]     Rank C# files by complexity x churn. Needs a git repository.
+archon debt [path]         Rank baseline entries by age x churn since acceptance. Needs git.
+archon trend [path]        Show baseline finding counts over the baseline file's own history.
 archon --version           Print the version.
 ```
 
@@ -74,7 +77,25 @@ archon --version           Print the version.
 change without writing them and exits `3` if any would — the same contract the standalone
 `sqlfmt-tsql` tool this was folded in from uses, so a CI step written against that tool needs no
 change to run against `archon format --check` instead. `init` takes `--force`, and `schema` takes
-`--output <file>`.
+`--output <file>`. `hotspots` takes `--days <n>` (default 180), `--top <n>` (default 20) and
+`--format console|json`; it multiplies each C# file's cognitive complexity by how many commits
+touched it in the window, so files that are both hard to follow and frequently edited surface
+first. Either signal alone is a weak predictor of risk — complex code nobody touches is stable —
+but the two together are the classic hotspot heuristic.
+
+`debt` takes `--top <n>` (default 50, `0` for all), `--format console|json` and `--fail-over
+<age>` (e.g. `180d`). Every baseline entry has a birthday — the commit that first added its
+fingerprint to the baseline file, found the same way `git log -S` finds any string's history —
+and this ranks entries by how old that birthday is, multiplied by how much the file has changed
+since. A suppression sitting untouched on stable code is one thing; one sitting on code that has
+moved six times since it was accepted is quietly rotting. `--fail-over` turns that into a gate: a
+build fails once any accepted finding crosses the given age, so debt cannot go invisible forever.
+
+`trend` takes `--limit <n>` (default 20, `0` for all) and `--format console|json`. The baseline
+file already lives in git, so its own commit history is a time series of the codebase's accepted
+debt with no extra storage: this walks the revisions that touched it and reports the total finding
+count and per-rule breakdown at each one, so a rule's count climbing release over release is as
+visible as its count today.
 
 Exit codes are `0` when nothing reached the `--fail-on` level, `1` when something did, and `2`
 when the command could not run. A pipeline step is usually:
@@ -265,6 +286,7 @@ accepted finding as a new one.
 | `AR0071` | information | file | maintainability | A local variable is declared and never read again |
 | `AR0072` | information | file | maintainability | An 'if' or ternary condition is a literal true/false, or compares an identifier to itself |
 | `AR0073` | hint | file | maintainability | Console.Write/WriteLine is called directly instead of through a logger |
+| `AR0080` | warning | workspace | sql | A column named in inline SQL does not exist on the table it targets (single-table statements only) |
 
 `Scope` is what a rule needs in order to decide, and therefore when it runs. A `file` rule runs on
 every save; a `project` rule also runs on save, over the project that owns the saved file; a

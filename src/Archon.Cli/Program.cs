@@ -3,11 +3,13 @@ using Archon.Core.Configuration;
 using Archon.Core.Engine;
 using Archon.Core.Explanations;
 using Archon.Core.Findings;
+using Archon.Core.Insights;
 using Archon.Core.Output;
 using Archon.Core.Rules;
 using Archon.Core.Sources;
 using Archon.Core.Sql;
 using Archon.Rules;
+using Archon.Rules.CSharp;
 
 namespace Archon.Cli;
 
@@ -61,6 +63,9 @@ internal static class Program
                 "explain" => RunExplain(args[1..]),
                 "init" => RunInit(args[1..]),
                 "schema" => RunSchema(args[1..]),
+                "hotspots" => RunHotspots(args[1..]),
+                "debt" => RunDebt(args[1..]),
+                "trend" => RunTrend(args[1..]),
                 _ => Unknown(args[0])
             };
         }
@@ -79,7 +84,7 @@ internal static class Program
 
     private static bool PathExists(string path) => Directory.Exists(path) || File.Exists(path);
 
-    private static readonly string[] CommandNames = { "check", "format", "rules", "baseline", "explain", "init", "schema" };
+    private static readonly string[] CommandNames = { "check", "format", "rules", "baseline", "explain", "init", "schema", "hotspots", "debt", "trend" };
 
     private static int Unknown(string command)
     {
@@ -104,6 +109,9 @@ internal static class Program
               explain <ruleId>    Describe one rule.
               init [path]         Write a starter .archon.json and its schema.
               schema [path]       Print the JSON Schema for .archon.json.
+              hotspots [path]     Rank C# files by complexity x churn. Needs a git repository.
+              debt [path]         Rank baseline entries by age x churn since acceptance. Needs git.
+              trend [path]        Show baseline finding counts over the baseline file's own history.
               --version           Print the version and exit.
 
             Options for check:
@@ -121,6 +129,20 @@ internal static class Program
 
             Options for schema:
               --output <file>     Write to a file instead of standard output.
+
+            Options for hotspots:
+              --days <n>          How far back to count commits. Default 180.
+              --top <n>           How many files to show. Default 20.
+              --format <name>     console (default) or json.
+
+            Options for debt:
+              --top <n>           How many entries to show. Default 50, 0 for all.
+              --format <name>     console (default) or json.
+              --fail-over <age>   Fail if any entry is older than this, e.g. '180d'.
+
+            Options for trend:
+              --limit <n>         How many baseline revisions to show, newest first. Default 20, 0 for all.
+              --format <name>     console (default) or json.
 
             Exit codes:
               0  no finding at or above the --fail-on level, or nothing 'format --check' would change
@@ -474,6 +496,419 @@ internal static class Program
 
         ReportMessages(session);
         return ExitClean;
+    }
+
+    /// <summary>
+    /// Ranks C# files by cognitive complexity multiplied by how many commits touched them in the
+    /// window, so files that are both hard to follow and frequently edited surface first. Needs a
+    /// git repository; a workspace without one is told why rather than shown an empty table.
+    /// </summary>
+    private static int RunHotspots(string[] args)
+    {
+        if (args.Length > 0 && IsHelp(args[0]))
+        {
+            PrintUsage();
+            return ExitClean;
+        }
+
+        string path = ".";
+        int days = 180;
+        int top = 20;
+        bool json = false;
+        for (int i = 0; i < args.Length; i++)
+        {
+            string argument = args[i];
+            switch (argument)
+            {
+                case "--days":
+                    days = ParsePositiveInt(NextArg(args, ref i, "--days"), "--days");
+                    break;
+                case "--top":
+                    top = ParsePositiveInt(NextArg(args, ref i, "--top"), "--top");
+                    break;
+                case "--format":
+                    string value = NextArg(args, ref i, "--format");
+                    json = value.Equals("json", StringComparison.OrdinalIgnoreCase);
+                    if (!json && !value.Equals("console", StringComparison.OrdinalIgnoreCase) && !value.Equals("text", StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new ArgumentException($"unknown format '{value}'.");
+                    }
+                    break;
+                default:
+                    if (argument.StartsWith('-'))
+                    {
+                        Console.Error.WriteLine($"archon: unknown option '{argument}' for hotspots.");
+                        return ExitUsage;
+                    }
+                    path = argument;
+                    break;
+            }
+        }
+
+        if (!PathExists(path))
+        {
+            Console.Error.WriteLine($"archon: '{path}' does not exist.");
+            return ExitUsage;
+        }
+
+        string? repositoryRoot = GitHistory.FindRepositoryRoot(path);
+        if (repositoryRoot is null)
+        {
+            Console.Error.WriteLine("archon: hotspots needs a git repository; none was found.");
+            return ExitUsage;
+        }
+
+        Session session = Session.Create(path);
+        WorkspaceModel workspace = WorkspaceModel.Discover(path, session.Config.EffectiveExcludes());
+
+        var complexityByFile = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (SourceFile file in workspace.FilesOfLanguage(RuleLanguages.CSharp))
+        {
+            ParsedCSharp? parsed = session.Engine.Sources.GetCSharp(file.Path);
+            if (parsed is null)
+            {
+                continue;
+            }
+            string relative = System.IO.Path.GetRelativePath(repositoryRoot, file.Path).Replace('\\', '/');
+            complexityByFile[relative] = ComplexityRule.ScoreFile(parsed);
+        }
+
+        IReadOnlyDictionary<string, int> churnByFile = GitHistory.ChurnByFile(repositoryRoot, DateTimeOffset.UtcNow.AddDays(-days));
+        IReadOnlyList<HotspotEntry> ranked = HotspotAnalyzer.Rank(complexityByFile, churnByFile, top);
+
+        if (json)
+        {
+            var payload = ranked.Select(e => new { file = e.File, complexity = e.Complexity, churn = e.ChurnCommits, score = e.Score });
+            Console.WriteLine(JsonSerializer.Serialize(payload, new JsonSerializerOptions
+            {
+                WriteIndented = true,
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+            }));
+        }
+        else if (ranked.Count == 0)
+        {
+            Console.WriteLine($"No file was both scored and changed in the last {days} day(s).");
+        }
+        else
+        {
+            Console.WriteLine($"{"Score",-8} {"Complexity",-11} {"Churn",-6} File");
+            foreach (HotspotEntry entry in ranked)
+            {
+                Console.WriteLine($"{entry.Score,-8} {entry.Complexity,-11} {entry.ChurnCommits,-6} {entry.File}");
+            }
+        }
+
+        ReportMessages(session);
+        return ExitClean;
+    }
+
+    /// <summary>
+    /// Ranks baseline entries by how long ago they were accepted, multiplied by how much their
+    /// file has changed since. A suppression's own birthday is found by searching the baseline
+    /// file's history for the commit that first introduced its fingerprint text — the same
+    /// pickaxe technique <c>git log -S</c> uses for any other string. Needs a git repository.
+    /// </summary>
+    private static int RunDebt(string[] args)
+    {
+        if (args.Length > 0 && IsHelp(args[0]))
+        {
+            PrintUsage();
+            return ExitClean;
+        }
+
+        string path = ".";
+        int top = 50;
+        bool json = false;
+        int? failOverDays = null;
+        for (int i = 0; i < args.Length; i++)
+        {
+            string argument = args[i];
+            switch (argument)
+            {
+                case "--top":
+                    top = ParseNonNegativeInt(NextArg(args, ref i, "--top"), "--top");
+                    break;
+                case "--format":
+                    string value = NextArg(args, ref i, "--format");
+                    json = value.Equals("json", StringComparison.OrdinalIgnoreCase);
+                    if (!json && !value.Equals("console", StringComparison.OrdinalIgnoreCase) && !value.Equals("text", StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new ArgumentException($"unknown format '{value}'.");
+                    }
+                    break;
+                case "--fail-over":
+                    failOverDays = ParseDays(NextArg(args, ref i, "--fail-over"));
+                    break;
+                default:
+                    if (argument.StartsWith('-'))
+                    {
+                        Console.Error.WriteLine($"archon: unknown option '{argument}' for debt.");
+                        return ExitUsage;
+                    }
+                    path = argument;
+                    break;
+            }
+        }
+
+        if (!PathExists(path))
+        {
+            Console.Error.WriteLine($"archon: '{path}' does not exist.");
+            return ExitUsage;
+        }
+
+        string? repositoryRoot = GitHistory.FindRepositoryRoot(path);
+        if (repositoryRoot is null)
+        {
+            Console.Error.WriteLine("archon: debt needs a git repository; none was found.");
+            return ExitUsage;
+        }
+
+        Session session = Session.Create(path);
+        if (session.Baseline.Entries.Count == 0)
+        {
+            Console.WriteLine("No baseline entries.");
+            ReportMessages(session);
+            return ExitClean;
+        }
+
+        string relativeBaselinePath = System.IO.Path.GetRelativePath(repositoryRoot, session.BaselinePath).Replace('\\', '/');
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        var introducedByFingerprint = new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal);
+        var churnByFingerprint = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (BaselineEntry entry in session.Baseline.Entries)
+        {
+            IReadOnlyList<GitHistory.FileCommit> matches =
+                GitHistory.CommitsTouching(repositoryRoot, relativeBaselinePath, pickaxe: entry.Fingerprint);
+            if (matches.Count == 0)
+            {
+                continue;
+            }
+            // Newest first, as git log reports it: the last match is the oldest, and therefore
+            // the commit that first introduced this fingerprint's text.
+            DateTimeOffset introduced = matches[^1].When;
+            introducedByFingerprint[entry.Fingerprint] = introduced;
+            churnByFingerprint[entry.Fingerprint] = GitHistory.CommitCountSince(repositoryRoot, entry.File, introduced);
+        }
+
+        IReadOnlyList<DebtEntry> ranked = DebtAnalyzer.Rank(session.Baseline.Entries, introducedByFingerprint, churnByFingerprint, now);
+        IReadOnlyList<DebtEntry> shown = top > 0 ? ranked.Take(top).ToList() : ranked;
+
+        if (json)
+        {
+            var payload = shown.Select(e => new
+            {
+                fingerprint = e.Fingerprint,
+                ruleId = e.RuleId,
+                file = e.File,
+                introduced = e.Introduced?.ToString("yyyy-MM-dd"),
+                ageDays = e.AgeDays,
+                churn = e.ChurnCommits,
+                score = e.Score
+            });
+            Console.WriteLine(JsonSerializer.Serialize(payload, new JsonSerializerOptions
+            {
+                WriteIndented = true,
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+            }));
+        }
+        else
+        {
+            Console.WriteLine($"{"Score",-8} {"Age",-8} {"Churn",-6} {"Rule",-8} File");
+            foreach (DebtEntry entry in shown)
+            {
+                string age = entry.Introduced is null ? "unknown" : FormatAge(entry.AgeDays);
+                Console.WriteLine($"{entry.Score,-8} {age,-8} {entry.ChurnCommits,-6} {entry.RuleId,-8} {entry.File}");
+            }
+            Console.WriteLine();
+            string suffix = top > 0 && ranked.Count > top ? $", showing the {top} oldest x churniest" : "";
+            Console.WriteLine($"{ranked.Count} baseline entrie(s){suffix}.");
+        }
+
+        ReportMessages(session);
+
+        if (failOverDays is null)
+        {
+            return ExitClean;
+        }
+        return ranked.Any(e => e.AgeDays > failOverDays.Value) ? ExitFindings : ExitClean;
+    }
+
+    /// <summary>
+    /// Reads the baseline file's own git history and turns it into a time series of finding
+    /// counts. The baseline already lives in git, so this needs no storage of its own — walking a
+    /// handful of past revisions is all it takes. Needs a git repository.
+    /// </summary>
+    private static int RunTrend(string[] args)
+    {
+        if (args.Length > 0 && IsHelp(args[0]))
+        {
+            PrintUsage();
+            return ExitClean;
+        }
+
+        string path = ".";
+        int limit = 20;
+        bool json = false;
+        for (int i = 0; i < args.Length; i++)
+        {
+            string argument = args[i];
+            switch (argument)
+            {
+                case "--limit":
+                    limit = ParseNonNegativeInt(NextArg(args, ref i, "--limit"), "--limit");
+                    break;
+                case "--format":
+                    string value = NextArg(args, ref i, "--format");
+                    json = value.Equals("json", StringComparison.OrdinalIgnoreCase);
+                    if (!json && !value.Equals("console", StringComparison.OrdinalIgnoreCase) && !value.Equals("text", StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new ArgumentException($"unknown format '{value}'.");
+                    }
+                    break;
+                default:
+                    if (argument.StartsWith('-'))
+                    {
+                        Console.Error.WriteLine($"archon: unknown option '{argument}' for trend.");
+                        return ExitUsage;
+                    }
+                    path = argument;
+                    break;
+            }
+        }
+
+        if (!PathExists(path))
+        {
+            Console.Error.WriteLine($"archon: '{path}' does not exist.");
+            return ExitUsage;
+        }
+
+        string? repositoryRoot = GitHistory.FindRepositoryRoot(path);
+        if (repositoryRoot is null)
+        {
+            Console.Error.WriteLine("archon: trend needs a git repository; none was found.");
+            return ExitUsage;
+        }
+
+        Session session = Session.Create(path);
+        string relativeBaselinePath = System.IO.Path.GetRelativePath(repositoryRoot, session.BaselinePath).Replace('\\', '/');
+
+        IReadOnlyList<GitHistory.FileCommit> commits = GitHistory.CommitsTouching(repositoryRoot, relativeBaselinePath);
+        if (commits.Count == 0)
+        {
+            Console.WriteLine($"No history found for {relativeBaselinePath}.");
+            ReportMessages(session);
+            return ExitClean;
+        }
+
+        IEnumerable<GitHistory.FileCommit> selected = limit > 0 ? commits.Take(limit) : commits;
+
+        var snapshots = new List<BaselineSnapshot>();
+        // 'selected' is newest first, as git log reports it; walk oldest to newest so the trend
+        // reads left to right in time.
+        foreach (GitHistory.FileCommit commit in selected.Reverse())
+        {
+            string? content = GitHistory.ShowFileAt(repositoryRoot, commit.Hash, relativeBaselinePath);
+            if (content is null)
+            {
+                continue;
+            }
+            try
+            {
+                Baseline atCommit = Baseline.Parse(content);
+                snapshots.Add(new BaselineSnapshot(commit.Hash, commit.When, atCommit.Entries));
+            }
+            catch (JsonException)
+            {
+                // A revision that predates the current baseline format, or content that does not
+                // parse for some other reason. Skipped rather than counted as zero findings, so a
+                // gap in the series is not misread as debt having been paid off.
+            }
+        }
+
+        IReadOnlyList<TrendPoint> points = TrendAnalyzer.Summarize(snapshots);
+
+        if (json)
+        {
+            var payload = points.Select(p => new
+            {
+                commit = p.CommitHash[..Math.Min(10, p.CommitHash.Length)],
+                date = p.When.ToString("yyyy-MM-dd"),
+                total = p.Total,
+                delta = p.DeltaFromPrevious,
+                byRule = p.ByRule
+            });
+            Console.WriteLine(JsonSerializer.Serialize(payload, new JsonSerializerOptions
+            {
+                WriteIndented = true,
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+            }));
+        }
+        else if (points.Count == 0)
+        {
+            Console.WriteLine("No parseable baseline revision was found in the selected history.");
+        }
+        else
+        {
+            Console.WriteLine($"{"Commit",-10} {"Date",-12} {"Total",-7} Delta");
+            foreach (TrendPoint point in points)
+            {
+                string delta = point.DeltaFromPrevious switch
+                {
+                    > 0 => $"+{point.DeltaFromPrevious}",
+                    _ => point.DeltaFromPrevious.ToString()
+                };
+                Console.WriteLine($"{point.CommitHash[..Math.Min(10, point.CommitHash.Length)],-10} {point.When,-12:yyyy-MM-dd} {point.Total,-7} {delta}");
+            }
+        }
+
+        ReportMessages(session);
+        return ExitClean;
+    }
+
+    private static string FormatAge(int days) => days switch
+    {
+        < 30 => $"{days}d",
+        < 365 => $"{days / 30}mo",
+        _ => $"{days / 365}y"
+    };
+
+    private static int ParseDays(string value)
+    {
+        string trimmed = value.Trim();
+        string numeric = trimmed.EndsWith('d') ? trimmed[..^1] : trimmed;
+        if (!int.TryParse(numeric, out int days) || days <= 0)
+        {
+            throw new ArgumentException("--fail-over needs a value like '180d'.");
+        }
+        return days;
+    }
+
+    private static int ParseNonNegativeInt(string value, string option)
+    {
+        if (!int.TryParse(value, out int parsed) || parsed < 0)
+        {
+            throw new ArgumentException($"{option} needs a whole number of zero or more.");
+        }
+        return parsed;
+    }
+
+    private static string NextArg(string[] args, ref int index, string option)
+    {
+        if (index + 1 >= args.Length)
+        {
+            throw new ArgumentException($"{option} needs a value.");
+        }
+        return args[++index];
+    }
+
+    private static int ParsePositiveInt(string value, string option)
+    {
+        if (!int.TryParse(value, out int parsed) || parsed <= 0)
+        {
+            throw new ArgumentException($"{option} needs a positive whole number.");
+        }
+        return parsed;
     }
 
     /// <summary>Parsed command-line options, with defaults chosen so that a bare command is safe.</summary>
