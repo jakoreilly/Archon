@@ -84,35 +84,19 @@ public static class TSqlFormatter
 
     /// <summary>Regenerates one statement from its AST and appends it, re-adding a trailing semicolon
     /// if the source had one. ScriptDom's generator has no notion of "was semicolon-terminated" — a
-    /// semicolon is just an optional separator token sitting in the gap after the statement, the same
-    /// gap <see cref="EmitCommentsBetween"/> scans for comments — so without this, a semicolon the
-    /// author wrote would silently vanish on every reformat, regardless of whether T-SQL requires one
+    /// trailing semicolon is parsed as part of the statement's own token span (its last token *is* the
+    /// semicolon, when one was written) but is not part of the AST the generator walks, so without
+    /// this it would silently vanish on every reformat, regardless of whether T-SQL requires one
     /// here.</summary>
     private static void AppendStatement(StringBuilder sb, IList<TSqlParserToken> tokens, Sql150ScriptGenerator gen, TSqlStatement stmt)
     {
         gen.GenerateScript(stmt, out var formatted);
         sb.Append(formatted.TrimEnd());
-        if (HasTrailingSemicolon(tokens, stmt.LastTokenIndex))
+        if (tokens[stmt.LastTokenIndex].TokenType == TSqlTokenType.Semicolon)
         {
             sb.Append(';');
         }
         sb.Append('\n');
-    }
-
-    /// <summary>Whether the first non-whitespace token after a statement's own last token is a
-    /// semicolon — i.e. whether the source terminated this particular statement with one.</summary>
-    private static bool HasTrailingSemicolon(IList<TSqlParserToken> tokens, int lastTokenIndex)
-    {
-        for (var i = lastTokenIndex + 1; i < tokens.Count; i++)
-        {
-            TSqlTokenType type = tokens[i].TokenType;
-            if (type == TSqlTokenType.WhiteSpace)
-            {
-                continue;
-            }
-            return type == TSqlTokenType.Semicolon;
-        }
-        return false;
     }
 
     /// <summary>Emits every comment token in [from, toExclusive) verbatim, one per line. Whitespace

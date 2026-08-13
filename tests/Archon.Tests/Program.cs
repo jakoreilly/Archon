@@ -277,6 +277,33 @@ internal static class Program
             harness.Check($"retains sibling {i}'s own comment, not a neighbour's",
                 formattedManySiblings.Contains($"-- sibling comment {i}\n    SELECT {i}"));
         }
+
+        // Regression: a statement's own trailing semicolon is a real token in ScriptDom's token
+        // stream (it is the statement's own LastTokenIndex when written), but it is not part of the
+        // AST the generator regenerates from, so it used to be silently dropped on every reformat —
+        // whether or not the source author wrote one.
+        const string semicolons = """
+            SELECT 1;
+            SELECT 2
+            GO
+            CREATE PROCEDURE dbo.usp_Semicolons
+            AS
+            BEGIN
+                SELECT 3;
+                SELECT 4
+            END
+            """;
+        string formattedSemicolons = TSqlFormatter.Format(semicolons);
+        harness.Check("keeps a top-level statement's own trailing semicolon",
+            formattedSemicolons.Contains("SELECT 1;"));
+        harness.Check("does not invent a semicolon a top-level statement never had",
+            formattedSemicolons.Contains("SELECT 2\n") && !formattedSemicolons.Contains("SELECT 2;"));
+        harness.Check("keeps a statement's trailing semicolon inside a BEGIN...END body",
+            formattedSemicolons.Contains("SELECT 3;"));
+        harness.Check("does not invent a semicolon inside a BEGIN...END body",
+            formattedSemicolons.Contains("SELECT 4\n") && !formattedSemicolons.Contains("SELECT 4;"));
+        harness.Equal("semicolon preservation is idempotent",
+            formattedSemicolons, TSqlFormatter.Format(formattedSemicolons));
     }
 
     /// <summary>Walks up from the test binary to the repository root (marked by Archon.slnx), the
