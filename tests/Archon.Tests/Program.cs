@@ -172,10 +172,101 @@ internal static class Program
         harness.Equal("comment preservation is itself idempotent",
             formattedCommented, TSqlFormatter.Format(formattedCommented));
 
-        harness.Check("flags a comment sitting inside a statement",
+        harness.Check("flags a comment sitting mid-expression, which cannot be preserved",
             TSqlFormatter.HasInlineComments(commented));
         harness.Check("does not flag comments that only sit between statements",
             !TSqlFormatter.HasInlineComments("-- header\nCREATE TABLE dbo.T (Id INT);\nGO\n-- footer\n"));
+
+        // A comment between statements inside a procedure body reads, to whoever wrote it, exactly
+        // like one between top-level statements — it should survive the same way.
+        const string procedureBody = """
+            CREATE PROCEDURE dbo.usp_DoWork
+            AS
+            BEGIN
+                -- Step 1: validate input.
+                DECLARE @x INT = 1;
+                -- Step 2: do the work.
+                UPDATE dbo.T1 SET Name = 'x' WHERE Id = @x;
+            END
+            """;
+        string formattedProcedure = TSqlFormatter.Format(procedureBody);
+        harness.Check("retains a comment between two statements inside a procedure body",
+            formattedProcedure.Contains("Step 1: validate input."));
+        harness.Check("retains a comment between the last inner statement and END",
+            formattedProcedure.Contains("Step 2: do the work."));
+        harness.Check("does not flag a procedure body's between-statement comments as unpreservable",
+            !TSqlFormatter.HasInlineComments(procedureBody));
+        harness.Equal("procedure-body comment preservation is idempotent",
+            formattedProcedure, TSqlFormatter.Format(formattedProcedure));
+
+        // The same guarantee has to hold when a BEGIN...END sits nested inside another one (an IF
+        // written with braces, inside a procedure body), since that is exactly where a fix scoped
+        // only to the outermost body would stop working.
+        const string nestedBlocks = """
+            CREATE PROCEDURE dbo.usp_Nested
+            AS
+            BEGIN
+                -- outer step
+                DECLARE @x INT = 1;
+                IF @x > 0
+                BEGIN
+                    -- inner step
+                    SET @x = @x + 1;
+                END
+            END
+            """;
+        string formattedNested = TSqlFormatter.Format(nestedBlocks);
+        harness.Check("retains a comment in the outer body of two nested BEGIN...END blocks",
+            formattedNested.Contains("outer step"));
+        harness.Check("retains a comment in the inner body of two nested BEGIN...END blocks",
+            formattedNested.Contains("inner step"));
+        harness.Equal("nested-block comment preservation is idempotent",
+            formattedNested, TSqlFormatter.Format(formattedNested));
+
+        // A comment inside an empty BEGIN...END (no real statements at all) is still between
+        // something, even though there is nothing either side of it to anchor the gap to.
+        const string commentOnlyBlock = "CREATE PROCEDURE dbo.usp_Stub AS BEGIN -- not implemented yet\nEND";
+        harness.Check("retains a comment that is the only thing inside a BEGIN...END",
+            TSqlFormatter.Format(commentOnlyBlock).Contains("not implemented yet"));
+
+        // Regression: each preserved body is marked internally with a numbered placeholder while
+        // formatting is in progress. Marker '1' is a literal string-prefix of marker '10', '11', ...
+        // so a nested block (which is assigned a low marker number, since numbering happens
+        // innermost-first) followed by ten or more unrelated sibling procedures used to risk the
+        // low marker's splice matching a high marker's placeholder line instead of its own.
+        string manySiblings = """
+            CREATE PROCEDURE dbo.usp_Nested
+            AS
+            BEGIN
+                -- nested-outer comment
+                IF 1 = 1
+                BEGIN
+                    -- nested-inner comment
+                    SELECT 0;
+                END
+            END
+            GO
+
+            """ + string.Concat(Enumerable.Range(1, 15).Select(i => $"""
+                CREATE PROCEDURE dbo.usp_Sib{i}
+                AS
+                BEGIN
+                    -- sibling comment {i}
+                    SELECT {i};
+                END
+                GO
+
+                """));
+        string formattedManySiblings = TSqlFormatter.Format(manySiblings);
+        harness.Check("leaves no unresolved placeholder marker in the output",
+            !formattedManySiblings.Contains("ARCHON_FMT_BLOCK"));
+        harness.Check("retains a nested block's comment alongside fifteen unrelated siblings",
+            formattedManySiblings.Contains("nested-outer comment") && formattedManySiblings.Contains("nested-inner comment"));
+        for (var i = 1; i <= 15; i++)
+        {
+            harness.Check($"retains sibling {i}'s own comment, not a neighbour's",
+                formattedManySiblings.Contains($"-- sibling comment {i}\n    SELECT {i}"));
+        }
     }
 
     /// <summary>Walks up from the test binary to the repository root (marked by Archon.slnx), the
