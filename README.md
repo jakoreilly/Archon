@@ -68,6 +68,7 @@ archon init [path]         Write a starter .archon.json and its schema.
 archon schema [path]       Print the JSON Schema for .archon.json.
 archon hotspots [path]     Rank C# files by complexity x churn. Needs a git repository.
 archon debt [path]         Rank baseline entries by age x churn since acceptance. Needs git.
+archon trend [path]        Show baseline finding counts over the baseline file's own history.
 archon --version           Print the version.
 ```
 
@@ -89,6 +90,12 @@ and this ranks entries by how old that birthday is, multiplied by how much the f
 since. A suppression sitting untouched on stable code is one thing; one sitting on code that has
 moved six times since it was accepted is quietly rotting. `--fail-over` turns that into a gate: a
 build fails once any accepted finding crosses the given age, so debt cannot go invisible forever.
+
+`trend` takes `--limit <n>` (default 20, `0` for all) and `--format console|json`. The baseline
+file already lives in git, so its own commit history is a time series of the codebase's accepted
+debt with no extra storage: this walks the revisions that touched it and reports the total finding
+count and per-rule breakdown at each one, so a rule's count climbing release over release is as
+visible as its count today.
 
 Exit codes are `0` when nothing reached the `--fail-on` level, `1` when something did, and `2`
 when the command could not run. A pipeline step is usually:

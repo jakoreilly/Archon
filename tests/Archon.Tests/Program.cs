@@ -60,6 +60,8 @@ internal static class Program
         GitHistoryRules(harness);
         DebtRankingRules(harness);
         GitHistoryChurnSinceRules(harness);
+        TrendAnalyzerRules(harness);
+        BaselineHistoryReadingRules(harness);
 
         return harness.Report();
     }
@@ -2475,6 +2477,94 @@ internal static class Program
                 GitHistory.CommitCountSince(root, "a.cs", beforeSecondCommit));
             harness.Equal("a window starting after every commit counts zero", 0,
                 GitHistory.CommitCountSince(root, "a.cs", DateTimeOffset.UtcNow.AddDays(1)));
+        }
+        finally
+        {
+            DeleteDirectoryRobustly(root);
+        }
+    }
+
+    internal static void TrendAnalyzerRules(Harness harness)
+    {
+        harness.Group("Trend analysis: baseline history as a time series");
+
+        DateTimeOffset t0 = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var snapshots = new List<BaselineSnapshot>
+        {
+            new("c1", t0, new List<BaselineEntry>
+            {
+                new() { Fingerprint = "a", RuleId = "AR0060", File = "x.cs", Message = "m" }
+            }),
+            new("c2", t0.AddDays(1), new List<BaselineEntry>
+            {
+                new() { Fingerprint = "a", RuleId = "AR0060", File = "x.cs", Message = "m" },
+                new() { Fingerprint = "b", RuleId = "AR0060", File = "y.cs", Message = "m" },
+                new() { Fingerprint = "c", RuleId = "AR0074", File = "z.cs", Message = "m" }
+            }),
+            new("c3", t0.AddDays(2), new List<BaselineEntry>
+            {
+                new() { Fingerprint = "a", RuleId = "AR0060", File = "x.cs", Message = "m" }
+            })
+        };
+
+        IReadOnlyList<TrendPoint> points = TrendAnalyzer.Summarize(snapshots);
+        harness.Equal("one point per snapshot", 3, points.Count);
+        harness.Equal("the first point has no previous point to delta against", 0, points[0].DeltaFromPrevious);
+        harness.Equal("the second point's delta reflects two new entries", 2, points[1].DeltaFromPrevious);
+        harness.Equal("a later point can show debt being paid down as a negative delta", -2, points[2].DeltaFromPrevious);
+        harness.Equal("entries are grouped by rule id within a snapshot", 2, points[1].ByRule["AR0060"]);
+        harness.Equal("a rule with one entry in a snapshot is counted once", 1, points[1].ByRule["AR0074"]);
+        harness.Check("a rule absent from a snapshot is absent from its breakdown, not present as zero",
+            !points[2].ByRule.ContainsKey("AR0074"));
+    }
+
+    /// <summary>
+    /// Exercises the trend command's real dependency: reading the baseline file's own git history
+    /// via <see cref="GitHistory"/> and parsing each revision with <see cref="Baseline.Parse"/>.
+    /// </summary>
+    internal static void BaselineHistoryReadingRules(Harness harness)
+    {
+        harness.Group("Reading baseline history from git");
+
+        string root = Path.Combine(Path.GetTempPath(), "archon-tests-git-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            RunGitOrThrow(root, "init", "--initial-branch=main");
+            RunGitOrThrow(root, "config", "user.email", "test@example.com");
+            RunGitOrThrow(root, "config", "user.name", "Archon Tests");
+
+            string baselinePath = Path.Combine(root, ".archon-baseline.json");
+            File.WriteAllText(baselinePath, """[{"fingerprint":"a","ruleId":"AR0060","file":"x.cs","message":"m"}]""");
+            RunGitOrThrow(root, "add", ".archon-baseline.json");
+            RunGitOrThrow(root, "commit", "-m", "baseline: one entry");
+
+            File.WriteAllText(baselinePath, """
+                [
+                  {"fingerprint":"a","ruleId":"AR0060","file":"x.cs","message":"m"},
+                  {"fingerprint":"b","ruleId":"AR0074","file":"y.cs","message":"m"}
+                ]
+                """);
+            RunGitOrThrow(root, "add", ".archon-baseline.json");
+            RunGitOrThrow(root, "commit", "-m", "baseline: add one more");
+
+            IReadOnlyList<GitHistory.FileCommit> commits =
+                GitHistory.CommitsTouching(root, ".archon-baseline.json");
+            harness.Equal("two commits touched the baseline file", 2, commits.Count);
+
+            var snapshots = new List<BaselineSnapshot>();
+            foreach (GitHistory.FileCommit commit in commits.Reverse())
+            {
+                string? content = GitHistory.ShowFileAt(root, commit.Hash, ".archon-baseline.json");
+                harness.Check("show reads content for every commit touching the file", content is not null);
+                Baseline parsed = Baseline.Parse(content!);
+                snapshots.Add(new BaselineSnapshot(commit.Hash, commit.When, parsed.Entries));
+            }
+
+            IReadOnlyList<TrendPoint> points = TrendAnalyzer.Summarize(snapshots);
+            harness.Equal("the oldest revision had one entry", 1, points[0].Total);
+            harness.Equal("the newest revision had two", 2, points[1].Total);
+            harness.Equal("the delta between them is one", 1, points[1].DeltaFromPrevious);
         }
         finally
         {

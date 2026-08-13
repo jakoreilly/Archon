@@ -65,6 +65,7 @@ internal static class Program
                 "schema" => RunSchema(args[1..]),
                 "hotspots" => RunHotspots(args[1..]),
                 "debt" => RunDebt(args[1..]),
+                "trend" => RunTrend(args[1..]),
                 _ => Unknown(args[0])
             };
         }
@@ -83,7 +84,7 @@ internal static class Program
 
     private static bool PathExists(string path) => Directory.Exists(path) || File.Exists(path);
 
-    private static readonly string[] CommandNames = { "check", "format", "rules", "baseline", "explain", "init", "schema", "hotspots", "debt" };
+    private static readonly string[] CommandNames = { "check", "format", "rules", "baseline", "explain", "init", "schema", "hotspots", "debt", "trend" };
 
     private static int Unknown(string command)
     {
@@ -110,6 +111,7 @@ internal static class Program
               schema [path]       Print the JSON Schema for .archon.json.
               hotspots [path]     Rank C# files by complexity x churn. Needs a git repository.
               debt [path]         Rank baseline entries by age x churn since acceptance. Needs git.
+              trend [path]        Show baseline finding counts over the baseline file's own history.
               --version           Print the version and exit.
 
             Options for check:
@@ -137,6 +139,10 @@ internal static class Program
               --top <n>           How many entries to show. Default 50, 0 for all.
               --format <name>     console (default) or json.
               --fail-over <age>   Fail if any entry is older than this, e.g. '180d'.
+
+            Options for trend:
+              --limit <n>         How many baseline revisions to show, newest first. Default 20, 0 for all.
+              --format <name>     console (default) or json.
 
             Exit codes:
               0  no finding at or above the --fail-on level, or nothing 'format --check' would change
@@ -726,6 +732,138 @@ internal static class Program
             return ExitClean;
         }
         return ranked.Any(e => e.AgeDays > failOverDays.Value) ? ExitFindings : ExitClean;
+    }
+
+    /// <summary>
+    /// Reads the baseline file's own git history and turns it into a time series of finding
+    /// counts. The baseline already lives in git, so this needs no storage of its own — walking a
+    /// handful of past revisions is all it takes. Needs a git repository.
+    /// </summary>
+    private static int RunTrend(string[] args)
+    {
+        if (args.Length > 0 && IsHelp(args[0]))
+        {
+            PrintUsage();
+            return ExitClean;
+        }
+
+        string path = ".";
+        int limit = 20;
+        bool json = false;
+        for (int i = 0; i < args.Length; i++)
+        {
+            string argument = args[i];
+            switch (argument)
+            {
+                case "--limit":
+                    limit = ParseNonNegativeInt(NextArg(args, ref i, "--limit"), "--limit");
+                    break;
+                case "--format":
+                    string value = NextArg(args, ref i, "--format");
+                    json = value.Equals("json", StringComparison.OrdinalIgnoreCase);
+                    if (!json && !value.Equals("console", StringComparison.OrdinalIgnoreCase) && !value.Equals("text", StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new ArgumentException($"unknown format '{value}'.");
+                    }
+                    break;
+                default:
+                    if (argument.StartsWith('-'))
+                    {
+                        Console.Error.WriteLine($"archon: unknown option '{argument}' for trend.");
+                        return ExitUsage;
+                    }
+                    path = argument;
+                    break;
+            }
+        }
+
+        if (!PathExists(path))
+        {
+            Console.Error.WriteLine($"archon: '{path}' does not exist.");
+            return ExitUsage;
+        }
+
+        string? repositoryRoot = GitHistory.FindRepositoryRoot(path);
+        if (repositoryRoot is null)
+        {
+            Console.Error.WriteLine("archon: trend needs a git repository; none was found.");
+            return ExitUsage;
+        }
+
+        Session session = Session.Create(path);
+        string relativeBaselinePath = System.IO.Path.GetRelativePath(repositoryRoot, session.BaselinePath).Replace('\\', '/');
+
+        IReadOnlyList<GitHistory.FileCommit> commits = GitHistory.CommitsTouching(repositoryRoot, relativeBaselinePath);
+        if (commits.Count == 0)
+        {
+            Console.WriteLine($"No history found for {relativeBaselinePath}.");
+            ReportMessages(session);
+            return ExitClean;
+        }
+
+        IEnumerable<GitHistory.FileCommit> selected = limit > 0 ? commits.Take(limit) : commits;
+
+        var snapshots = new List<BaselineSnapshot>();
+        // 'selected' is newest first, as git log reports it; walk oldest to newest so the trend
+        // reads left to right in time.
+        foreach (GitHistory.FileCommit commit in selected.Reverse())
+        {
+            string? content = GitHistory.ShowFileAt(repositoryRoot, commit.Hash, relativeBaselinePath);
+            if (content is null)
+            {
+                continue;
+            }
+            try
+            {
+                Baseline atCommit = Baseline.Parse(content);
+                snapshots.Add(new BaselineSnapshot(commit.Hash, commit.When, atCommit.Entries));
+            }
+            catch (JsonException)
+            {
+                // A revision that predates the current baseline format, or content that does not
+                // parse for some other reason. Skipped rather than counted as zero findings, so a
+                // gap in the series is not misread as debt having been paid off.
+            }
+        }
+
+        IReadOnlyList<TrendPoint> points = TrendAnalyzer.Summarize(snapshots);
+
+        if (json)
+        {
+            var payload = points.Select(p => new
+            {
+                commit = p.CommitHash[..Math.Min(10, p.CommitHash.Length)],
+                date = p.When.ToString("yyyy-MM-dd"),
+                total = p.Total,
+                delta = p.DeltaFromPrevious,
+                byRule = p.ByRule
+            });
+            Console.WriteLine(JsonSerializer.Serialize(payload, new JsonSerializerOptions
+            {
+                WriteIndented = true,
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+            }));
+        }
+        else if (points.Count == 0)
+        {
+            Console.WriteLine("No parseable baseline revision was found in the selected history.");
+        }
+        else
+        {
+            Console.WriteLine($"{"Commit",-10} {"Date",-12} {"Total",-7} Delta");
+            foreach (TrendPoint point in points)
+            {
+                string delta = point.DeltaFromPrevious switch
+                {
+                    > 0 => $"+{point.DeltaFromPrevious}",
+                    _ => point.DeltaFromPrevious.ToString()
+                };
+                Console.WriteLine($"{point.CommitHash[..Math.Min(10, point.CommitHash.Length)],-10} {point.When,-12:yyyy-MM-dd} {point.Total,-7} {delta}");
+            }
+        }
+
+        ReportMessages(session);
+        return ExitClean;
     }
 
     private static string FormatAge(int days) => days switch
