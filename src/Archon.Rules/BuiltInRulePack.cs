@@ -27,6 +27,7 @@ public sealed class BuiltInRulePack : IRulePack
         yield return new ComplexityRule();
         yield return new UnusedSymbolsRule();
         yield return new LogicHygieneRule();
+        yield return new DisposalRule();
         yield return new SchemaAwareSqlRule();
     }
 }

@@ -395,6 +395,11 @@
           "default": 400,
           "minimum": 100,
           "description": "How long to wait after the last keystroke before recomputing the diff in review mode."
+        },
+        "archon.focus.ignoreWhitespace": {
+          "type": "boolean",
+          "default": false,
+          "description": "In review mode, treat a whitespace-only change (e.g. a reformat) as unchanged rather than dimming nothing."
         }
       }
     }

@@ -93,7 +93,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     impactLens,
     vscode.window.registerTreeDataProvider('archon.rules', tree),
     vscode.languages.registerCodeLensProvider({ language: 'csharp', scheme: 'file' }, impactLens),
-    vscode.languages.registerCodeLensProvider({ scheme: 'file' }, new FocusLensProvider(focus)),
+    vscode.languages.registerCodeLensProvider(
+      { scheme: 'file' },
+      new FocusLensProvider(focus, (uri) => findingsByFile.get(uri.fsPath) ?? [])
+    ),
     vscode.languages.registerHoverProvider({ scheme: 'file' }, history),
     vscode.languages.registerDocumentFormattingEditProvider({ language: 'sql', scheme: 'file' }, formatting),
     vscode.languages.registerCodeActionsProvider(

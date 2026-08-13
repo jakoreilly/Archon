@@ -23,8 +23,24 @@ public sealed class SecurityHotspotRule : IRule
     public const string WeakCryptographicPrimitive = "AR0051";
     public const string InsecureRandomness = "AR0052";
     public const string CatastrophicBacktrackingRegex = "AR0053";
+    public const string SqlInjectionRisk = "AR0054";
 
     private const string Category = "security";
+
+    private static readonly HashSet<string> SqlCommandConstructorNames = new(StringComparer.Ordinal)
+    {
+        "SqlCommand", "OdbcCommand", "OleDbCommand", "NpgsqlCommand", "MySqlCommand", "SqliteCommand"
+    };
+
+    /// <summary>
+    /// EF Core's Raw methods send their argument to the database as written, unlike their
+    /// Interpolated counterparts, which parameterise each hole in a FormattableString before it
+    /// reaches the database -- so only the Raw family belongs here.
+    /// </summary>
+    private static readonly HashSet<string> RawSqlInvocationNames = new(StringComparer.Ordinal)
+    {
+        "ExecuteSqlRaw", "ExecuteSqlRawAsync", "FromSqlRaw", "SqlQueryRaw"
+    };
 
     private static readonly string[] CredentialNameFragments =
     {
@@ -78,7 +94,13 @@ public sealed class SecurityHotspotRule : IRule
             "Regular expression can backtrack catastrophically",
             Category,
             Severity.Warning,
-            "A quantified group is itself quantified, so a crafted input can make matching take exponential time.")
+            "A quantified group is itself quantified, so a crafted input can make matching take exponential time."),
+        new RuleDescriptor(
+            SqlInjectionRisk,
+            "SQL built by concatenation or interpolation",
+            Category,
+            Severity.Warning,
+            "A SQL command is built by string concatenation or interpolation instead of a parameterised query, risking SQL injection.")
     };
 
     public RuleScope Scope => RuleScope.File;
@@ -113,6 +135,10 @@ public sealed class SecurityHotspotRule : IRule
         if (context.IsEnabled(CatastrophicBacktrackingRegex))
         {
             findings.AddRange(FindBacktrackingRegex(parsed, file.Path));
+        }
+        if (context.IsEnabled(SqlInjectionRisk))
+        {
+            findings.AddRange(FindSqlInjectionRisk(parsed, file.Path));
         }
         return findings;
     }
@@ -385,6 +411,108 @@ public sealed class SecurityHotspotRule : IRule
     }
 
     private static bool IsQuantifier(char c) => c is '+' or '*' or '{';
+
+    private IEnumerable<Finding> FindSqlInjectionRisk(ParsedCSharp parsed, string filePath)
+    {
+        foreach (AssignmentExpressionSyntax assignment in parsed.Root.DescendantNodes().OfType<AssignmentExpressionSyntax>())
+        {
+            if (!assignment.IsKind(SyntaxKind.SimpleAssignmentExpression))
+            {
+                continue;
+            }
+            // Member access only (e.g. cmd.CommandText): a bare 'CommandText = ...' could just as
+            // easily be an unrelated local or property of the same name on a type with nothing to
+            // do with ADO.NET, and there is no receiver here to judge that from.
+            if (assignment.Left is not MemberAccessExpressionSyntax { Name.Identifier.Text: "CommandText" } ||
+                !IsDynamicSqlExpression(assignment.Right, out string reason))
+            {
+                continue;
+            }
+            yield return Create(SqlInjectionRisk, parsed, assignment.Span, filePath, "SqlInjectionRisk",
+                $"'CommandText' is assigned SQL built by {reason} rather than a parameterised query; use command parameters instead.");
+        }
+
+        foreach (ObjectCreationExpressionSyntax creation in parsed.Root.DescendantNodes().OfType<ObjectCreationExpressionSyntax>())
+        {
+            string typeName = DeclaredTypes.SimpleName(creation.Type.ToString());
+            if (!SqlCommandConstructorNames.Contains(typeName))
+            {
+                continue;
+            }
+            ExpressionSyntax? first = creation.ArgumentList?.Arguments.FirstOrDefault()?.Expression;
+            if (first is null || !IsDynamicSqlExpression(first, out string reason))
+            {
+                continue;
+            }
+            yield return Create(SqlInjectionRisk, parsed, creation.Span, filePath, "SqlInjectionRisk",
+                $"'{typeName}' is constructed from SQL built by {reason} rather than a parameterised query; use command parameters instead.");
+        }
+
+        foreach (InvocationExpressionSyntax invocation in parsed.Root.DescendantNodes().OfType<InvocationExpressionSyntax>())
+        {
+            if (invocation.Expression is not MemberAccessExpressionSyntax member ||
+                !RawSqlInvocationNames.Contains(member.Name.Identifier.Text))
+            {
+                continue;
+            }
+            ExpressionSyntax? first = invocation.ArgumentList.Arguments.FirstOrDefault()?.Expression;
+            if (first is null || !IsDynamicSqlExpression(first, out string reason))
+            {
+                continue;
+            }
+            yield return Create(SqlInjectionRisk, parsed, invocation.Span, filePath, "SqlInjectionRisk",
+                $"'{member.Name.Identifier.Text}' receives SQL built by {reason} rather than a parameterised query; " +
+                "use its Interpolated counterpart or command parameters instead.");
+        }
+    }
+
+    /// <summary>
+    /// True when an expression is a string built at runtime rather than fixed at compile time: an
+    /// interpolated string with at least one real hole, or a '+' chain where at least one operand is
+    /// not itself a string literal. A chain of nothing but string literals is left alone, since it is
+    /// no more dynamic than a single literal would be.
+    /// </summary>
+    private static bool IsDynamicSqlExpression(ExpressionSyntax expression, out string reason)
+    {
+        if (expression is InterpolatedStringExpressionSyntax interpolated && interpolated.Contents.OfType<InterpolationSyntax>().Any())
+        {
+            reason = "string interpolation";
+            return true;
+        }
+        if (expression is BinaryExpressionSyntax binary && binary.IsKind(SyntaxKind.AddExpression) &&
+            FlattenAdditions(binary).Any(operand => operand is not LiteralExpressionSyntax literal || !literal.IsKind(SyntaxKind.StringLiteralExpression)))
+        {
+            reason = "string concatenation";
+            return true;
+        }
+        reason = "";
+        return false;
+    }
+
+    private static IEnumerable<ExpressionSyntax> FlattenAdditions(ExpressionSyntax expression)
+    {
+        // Unwrapped first so a parenthesised literal, e.g. ("a") + "b", still reads as a literal
+        // operand instead of looking like a dynamic one merely for being wrapped.
+        while (expression is ParenthesizedExpressionSyntax parenthesized)
+        {
+            expression = parenthesized.Expression;
+        }
+        if (expression is BinaryExpressionSyntax binary && binary.IsKind(SyntaxKind.AddExpression))
+        {
+            foreach (ExpressionSyntax operand in FlattenAdditions(binary.Left))
+            {
+                yield return operand;
+            }
+            foreach (ExpressionSyntax operand in FlattenAdditions(binary.Right))
+            {
+                yield return operand;
+            }
+        }
+        else
+        {
+            yield return expression;
+        }
+    }
 
     private static Finding Create(string ruleId, ParsedCSharp parsed, TextSpan span, string filePath, string kind, string message)
     {

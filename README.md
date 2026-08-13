@@ -263,6 +263,7 @@ accepted finding as a new one.
 | `AR0011` | warning | file | async | A task-returning call is discarded |
 | `AR0012` | warning | file | async | An `async void` method that is not an event handler |
 | `AR0013` | warning | file | async | An empty catch block |
+| `AR0014` | warning | file | async | `throw ex;` inside a catch block resets the stack trace |
 | `AR0020` | information | file | performance | A sequence is counted to test whether it is empty |
 | `AR0021` | information | file | performance | String concatenation inside a loop |
 | `AR0022` | hint | file | performance | A sequence is copied then transformed again |
@@ -280,12 +281,14 @@ accepted finding as a new one.
 | `AR0051` | warning | file | security | A cryptographic primitive known to be weak by its written name is used |
 | `AR0052` | information | file | security | System.Random is used for a value whose name reads as security-sensitive |
 | `AR0053` | warning | file | security | A regex pattern contains a group that is itself quantified, risking catastrophic backtracking |
+| `AR0054` | warning | file | security | SQL is built by string concatenation or interpolation instead of a parameterised query |
 | `AR0060` | warning | file | complexity | A method's cognitive complexity crosses the configured threshold (default 15) |
 | `AR0061` | information | file | complexity | The same string literal appears several times in one file |
 | `AR0070` | hint | file | maintainability | A method parameter is never read in the method body |
 | `AR0071` | information | file | maintainability | A local variable is declared and never read again |
 | `AR0072` | information | file | maintainability | An 'if' or ternary condition is a literal true/false, or compares an identifier to itself |
 | `AR0073` | hint | file | maintainability | Console.Write/WriteLine is called directly instead of through a logger |
+| `AR0074` | warning | file | maintainability | A well-known disposable local is never disposed on any path the rule can see |
 | `AR0080` | warning | workspace | sql | A column named in inline SQL does not exist on the table it targets (single-table statements only) |
 
 `Scope` is what a rule needs in order to decide, and therefore when it runs. A `file` rule runs on

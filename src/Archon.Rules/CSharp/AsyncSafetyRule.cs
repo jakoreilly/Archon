@@ -31,6 +31,9 @@ public sealed class AsyncSafetyRule : IRule
     /// <summary>A catch block that discards the exception without logging or rethrowing.</summary>
     public const string SwallowedException = "AR0013";
 
+    /// <summary>'throw ex;' inside a catch block, which resets the stack trace to the rethrow site.</summary>
+    public const string RethrowLosesStackTrace = "AR0014";
+
     private const string Category = "async";
 
     public IReadOnlyList<RuleDescriptor> Descriptors { get; } = new[]
@@ -58,7 +61,13 @@ public sealed class AsyncSafetyRule : IRule
             "Exception discarded",
             Category,
             Severity.Warning,
-            "An empty catch block hides a failure completely.")
+            "An empty catch block hides a failure completely."),
+        new RuleDescriptor(
+            RethrowLosesStackTrace,
+            "Rethrow resets the stack trace",
+            Category,
+            Severity.Warning,
+            "'throw ex;' inside a catch block resets the stack trace to this line instead of preserving where the exception actually originated. Use a bare 'throw;' instead.")
     };
 
     public RuleScope Scope => RuleScope.File;
@@ -95,6 +104,10 @@ public sealed class AsyncSafetyRule : IRule
         if (context.IsEnabled(SwallowedException))
         {
             findings.AddRange(FindEmptyCatch(parsed, root, file.Path));
+        }
+        if (context.IsEnabled(RethrowLosesStackTrace))
+        {
+            findings.AddRange(FindRethrowLosesStackTrace(parsed, root, file.Path));
         }
         return findings;
     }
@@ -207,6 +220,34 @@ public sealed class AsyncSafetyRule : IRule
             }
             yield return Create(SwallowedException, parsed, catchClause.Block.Span, filePath, "SwallowedException",
                 "This catch block discards the exception; log it, rethrow it, or state in a comment why it is safe to ignore.");
+        }
+    }
+
+    private IEnumerable<Finding> FindRethrowLosesStackTrace(ParsedCSharp parsed, SyntaxNode root, string filePath)
+    {
+        foreach (CatchClauseSyntax catchClause in root.DescendantNodes().OfType<CatchClauseSyntax>())
+        {
+            string? exceptionName = catchClause.Declaration?.Identifier.Text;
+            if (string.IsNullOrEmpty(exceptionName))
+            {
+                continue;
+            }
+
+            foreach (ThrowStatementSyntax throwStatement in catchClause.Block.DescendantNodes().OfType<ThrowStatementSyntax>())
+            {
+                if (throwStatement.Expression is not IdentifierNameSyntax identifier || identifier.Identifier.Text != exceptionName)
+                {
+                    continue;
+                }
+                // A throw belongs to the nearest enclosing catch clause, so a nested catch shadowing
+                // the same variable name is its own case, not this one.
+                if (identifier.Ancestors().OfType<CatchClauseSyntax>().First() != catchClause)
+                {
+                    continue;
+                }
+                yield return Create(RethrowLosesStackTrace, parsed, throwStatement.Span, filePath, "RethrowLosesStackTrace",
+                    $"'throw {exceptionName};' resets the stack trace to this line. Use a bare 'throw;' to preserve where '{exceptionName}' was actually thrown.");
+            }
         }
     }
 
