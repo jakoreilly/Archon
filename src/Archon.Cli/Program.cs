@@ -64,6 +64,7 @@ internal static class Program
                 "init" => RunInit(args[1..]),
                 "schema" => RunSchema(args[1..]),
                 "hotspots" => RunHotspots(args[1..]),
+                "debt" => RunDebt(args[1..]),
                 _ => Unknown(args[0])
             };
         }
@@ -82,7 +83,7 @@ internal static class Program
 
     private static bool PathExists(string path) => Directory.Exists(path) || File.Exists(path);
 
-    private static readonly string[] CommandNames = { "check", "format", "rules", "baseline", "explain", "init", "schema", "hotspots" };
+    private static readonly string[] CommandNames = { "check", "format", "rules", "baseline", "explain", "init", "schema", "hotspots", "debt" };
 
     private static int Unknown(string command)
     {
@@ -108,6 +109,7 @@ internal static class Program
               init [path]         Write a starter .archon.json and its schema.
               schema [path]       Print the JSON Schema for .archon.json.
               hotspots [path]     Rank C# files by complexity x churn. Needs a git repository.
+              debt [path]         Rank baseline entries by age x churn since acceptance. Needs git.
               --version           Print the version and exit.
 
             Options for check:
@@ -130,6 +132,11 @@ internal static class Program
               --days <n>          How far back to count commits. Default 180.
               --top <n>           How many files to show. Default 20.
               --format <name>     console (default) or json.
+
+            Options for debt:
+              --top <n>           How many entries to show. Default 50, 0 for all.
+              --format <name>     console (default) or json.
+              --fail-over <age>   Fail if any entry is older than this, e.g. '180d'.
 
             Exit codes:
               0  no finding at or above the --fail-on level, or nothing 'format --check' would change
@@ -587,6 +594,165 @@ internal static class Program
 
         ReportMessages(session);
         return ExitClean;
+    }
+
+    /// <summary>
+    /// Ranks baseline entries by how long ago they were accepted, multiplied by how much their
+    /// file has changed since. A suppression's own birthday is found by searching the baseline
+    /// file's history for the commit that first introduced its fingerprint text — the same
+    /// pickaxe technique <c>git log -S</c> uses for any other string. Needs a git repository.
+    /// </summary>
+    private static int RunDebt(string[] args)
+    {
+        if (args.Length > 0 && IsHelp(args[0]))
+        {
+            PrintUsage();
+            return ExitClean;
+        }
+
+        string path = ".";
+        int top = 50;
+        bool json = false;
+        int? failOverDays = null;
+        for (int i = 0; i < args.Length; i++)
+        {
+            string argument = args[i];
+            switch (argument)
+            {
+                case "--top":
+                    top = ParseNonNegativeInt(NextArg(args, ref i, "--top"), "--top");
+                    break;
+                case "--format":
+                    string value = NextArg(args, ref i, "--format");
+                    json = value.Equals("json", StringComparison.OrdinalIgnoreCase);
+                    if (!json && !value.Equals("console", StringComparison.OrdinalIgnoreCase) && !value.Equals("text", StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new ArgumentException($"unknown format '{value}'.");
+                    }
+                    break;
+                case "--fail-over":
+                    failOverDays = ParseDays(NextArg(args, ref i, "--fail-over"));
+                    break;
+                default:
+                    if (argument.StartsWith('-'))
+                    {
+                        Console.Error.WriteLine($"archon: unknown option '{argument}' for debt.");
+                        return ExitUsage;
+                    }
+                    path = argument;
+                    break;
+            }
+        }
+
+        if (!PathExists(path))
+        {
+            Console.Error.WriteLine($"archon: '{path}' does not exist.");
+            return ExitUsage;
+        }
+
+        string? repositoryRoot = GitHistory.FindRepositoryRoot(path);
+        if (repositoryRoot is null)
+        {
+            Console.Error.WriteLine("archon: debt needs a git repository; none was found.");
+            return ExitUsage;
+        }
+
+        Session session = Session.Create(path);
+        if (session.Baseline.Entries.Count == 0)
+        {
+            Console.WriteLine("No baseline entries.");
+            ReportMessages(session);
+            return ExitClean;
+        }
+
+        string relativeBaselinePath = System.IO.Path.GetRelativePath(repositoryRoot, session.BaselinePath).Replace('\\', '/');
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        var introducedByFingerprint = new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal);
+        var churnByFingerprint = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (BaselineEntry entry in session.Baseline.Entries)
+        {
+            IReadOnlyList<GitHistory.FileCommit> matches =
+                GitHistory.CommitsTouching(repositoryRoot, relativeBaselinePath, pickaxe: entry.Fingerprint);
+            if (matches.Count == 0)
+            {
+                continue;
+            }
+            // Newest first, as git log reports it: the last match is the oldest, and therefore
+            // the commit that first introduced this fingerprint's text.
+            DateTimeOffset introduced = matches[^1].When;
+            introducedByFingerprint[entry.Fingerprint] = introduced;
+            churnByFingerprint[entry.Fingerprint] = GitHistory.CommitCountSince(repositoryRoot, entry.File, introduced);
+        }
+
+        IReadOnlyList<DebtEntry> ranked = DebtAnalyzer.Rank(session.Baseline.Entries, introducedByFingerprint, churnByFingerprint, now);
+        IReadOnlyList<DebtEntry> shown = top > 0 ? ranked.Take(top).ToList() : ranked;
+
+        if (json)
+        {
+            var payload = shown.Select(e => new
+            {
+                fingerprint = e.Fingerprint,
+                ruleId = e.RuleId,
+                file = e.File,
+                introduced = e.Introduced?.ToString("yyyy-MM-dd"),
+                ageDays = e.AgeDays,
+                churn = e.ChurnCommits,
+                score = e.Score
+            });
+            Console.WriteLine(JsonSerializer.Serialize(payload, new JsonSerializerOptions
+            {
+                WriteIndented = true,
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+            }));
+        }
+        else
+        {
+            Console.WriteLine($"{"Score",-8} {"Age",-8} {"Churn",-6} {"Rule",-8} File");
+            foreach (DebtEntry entry in shown)
+            {
+                string age = entry.Introduced is null ? "unknown" : FormatAge(entry.AgeDays);
+                Console.WriteLine($"{entry.Score,-8} {age,-8} {entry.ChurnCommits,-6} {entry.RuleId,-8} {entry.File}");
+            }
+            Console.WriteLine();
+            string suffix = top > 0 && ranked.Count > top ? $", showing the {top} oldest x churniest" : "";
+            Console.WriteLine($"{ranked.Count} baseline entrie(s){suffix}.");
+        }
+
+        ReportMessages(session);
+
+        if (failOverDays is null)
+        {
+            return ExitClean;
+        }
+        return ranked.Any(e => e.AgeDays > failOverDays.Value) ? ExitFindings : ExitClean;
+    }
+
+    private static string FormatAge(int days) => days switch
+    {
+        < 30 => $"{days}d",
+        < 365 => $"{days / 30}mo",
+        _ => $"{days / 365}y"
+    };
+
+    private static int ParseDays(string value)
+    {
+        string trimmed = value.Trim();
+        string numeric = trimmed.EndsWith('d') ? trimmed[..^1] : trimmed;
+        if (!int.TryParse(numeric, out int days) || days <= 0)
+        {
+            throw new ArgumentException("--fail-over needs a value like '180d'.");
+        }
+        return days;
+    }
+
+    private static int ParseNonNegativeInt(string value, string option)
+    {
+        if (!int.TryParse(value, out int parsed) || parsed < 0)
+        {
+            throw new ArgumentException($"{option} needs a whole number of zero or more.");
+        }
+        return parsed;
     }
 
     private static string NextArg(string[] args, ref int index, string option)

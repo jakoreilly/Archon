@@ -29,7 +29,7 @@ public static class GitHistory
     public static IReadOnlyDictionary<string, int> ChurnByFile(string repositoryRoot, DateTimeOffset since)
     {
         var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        string? output = Run(repositoryRoot, "log", $"--since={since:yyyy-MM-dd}", "--name-only", "--format=format:");
+        string? output = Run(repositoryRoot, "log", $"--since={FormatSince(since)}", "--name-only", "--format=format:");
         if (output is null)
         {
             return counts;
@@ -88,6 +88,26 @@ public static class GitHistory
     /// <summary>The content of a file as it stood at a given commit, or null if that failed.</summary>
     public static string? ShowFileAt(string repositoryRoot, string commitHash, string relativePath) =>
         Run(repositoryRoot, "show", $"{commitHash}:{relativePath}");
+
+    /// <summary>How many commits touched one file since a point in time. Zero when git is
+    /// unavailable, so a caller combining this with other signals need not special-case it.</summary>
+    public static int CommitCountSince(string repositoryRoot, string relativePath, DateTimeOffset since)
+    {
+        string? output = Run(repositoryRoot, "log", $"--since={FormatSince(since)}", "--format=%H", "--", relativePath);
+        if (output is null)
+        {
+            return 0;
+        }
+        return output.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length;
+    }
+
+    /// <summary>
+    /// Formats a timestamp for <c>--since</c> with an explicit time and offset. A bare
+    /// <c>yyyy-MM-dd</c> date is not reliably midnight to git's approxidate parser — it has been
+    /// observed to anchor to the current time of day instead, silently excluding same-day commits
+    /// made earlier than the moment the command runs — so every caller goes through this.
+    /// </summary>
+    private static string FormatSince(DateTimeOffset since) => since.ToString("yyyy-MM-ddTHH:mm:sszzz");
 
     private static string? Run(string workingDirectory, params string[] arguments)
     {

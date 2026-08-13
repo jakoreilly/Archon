@@ -58,6 +58,8 @@ internal static class Program
         ConfigSchemaRules(harness);
         HotspotRankingRules(harness);
         GitHistoryRules(harness);
+        DebtRankingRules(harness);
+        GitHistoryChurnSinceRules(harness);
 
         return harness.Report();
     }
@@ -2400,6 +2402,83 @@ internal static class Program
         catch (IOException)
         {
             // Best effort: a stray handle on Windows should not fail the suite over a temp directory.
+        }
+    }
+
+    internal static void DebtRankingRules(Harness harness)
+    {
+        harness.Group("Debt ranking: baseline age x churn since acceptance");
+
+        DateTimeOffset now = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var entries = new List<BaselineEntry>
+        {
+            new() { Fingerprint = "old-and-churny", RuleId = "AR0001", File = "a.cs", Message = "m" },
+            new() { Fingerprint = "old-but-stable", RuleId = "AR0002", File = "b.cs", Message = "m" },
+            new() { Fingerprint = "no-history-found", RuleId = "AR0003", File = "c.cs", Message = "m" }
+        };
+        var introduced = new Dictionary<string, DateTimeOffset>
+        {
+            ["old-and-churny"] = now.AddDays(-100),
+            ["old-but-stable"] = now.AddDays(-200)
+            // "no-history-found" deliberately absent.
+        };
+        var churn = new Dictionary<string, int>
+        {
+            ["old-and-churny"] = 10,
+            ["old-but-stable"] = 1
+            // "no-history-found" deliberately absent: GetValueOrDefault yields zero.
+        };
+
+        IReadOnlyList<DebtEntry> ranked = DebtAnalyzer.Rank(entries, introduced, churn, now);
+        harness.Equal("every baseline entry is represented, even ones history could not date", 3, ranked.Count);
+        harness.Equal("age x churn outranks mere age", "old-and-churny", ranked[0].Fingerprint);
+        harness.Equal("an entry with no history found ages as zero rather than guessed", 0,
+            ranked.First(e => e.Fingerprint == "no-history-found").AgeDays);
+        harness.Check("an entry with no history found has a null introduced date",
+            ranked.First(e => e.Fingerprint == "no-history-found").Introduced is null);
+        harness.Equal("age in days matches the gap to 'now'", 100,
+            ranked.First(e => e.Fingerprint == "old-and-churny").AgeDays);
+        harness.Equal("score is age in days times churn", 1000,
+            ranked.First(e => e.Fingerprint == "old-and-churny").Score);
+    }
+
+    internal static void GitHistoryChurnSinceRules(Harness harness)
+    {
+        harness.Group("GitHistory: commit count since a point in time");
+
+        string root = Path.Combine(Path.GetTempPath(), "archon-tests-git-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            RunGitOrThrow(root, "init", "--initial-branch=main");
+            RunGitOrThrow(root, "config", "user.email", "test@example.com");
+            RunGitOrThrow(root, "config", "user.name", "Archon Tests");
+
+            File.WriteAllText(Path.Combine(root, "a.cs"), "v1");
+            RunGitOrThrow(root, "add", "a.cs");
+            RunGitOrThrow(root, "commit", "-m", "v1");
+
+            // Git commit timestamps have one-second resolution; without this gap, "now" can land
+            // in the same second as the v1 commit and be counted as at-or-after it.
+            Thread.Sleep(1100);
+            DateTimeOffset beforeSecondCommit = DateTimeOffset.UtcNow;
+
+            File.WriteAllText(Path.Combine(root, "a.cs"), "v2");
+            RunGitOrThrow(root, "add", "a.cs");
+            RunGitOrThrow(root, "commit", "-m", "v2");
+
+            File.WriteAllText(Path.Combine(root, "a.cs"), "v3");
+            RunGitOrThrow(root, "add", "a.cs");
+            RunGitOrThrow(root, "commit", "-m", "v3");
+
+            harness.Equal("counts every commit touching the file since the given time", 2,
+                GitHistory.CommitCountSince(root, "a.cs", beforeSecondCommit));
+            harness.Equal("a window starting after every commit counts zero", 0,
+                GitHistory.CommitCountSince(root, "a.cs", DateTimeOffset.UtcNow.AddDays(1)));
+        }
+        finally
+        {
+            DeleteDirectoryRobustly(root);
         }
     }
 }

@@ -67,6 +67,7 @@ archon explain <ruleId>    Describe one rule.
 archon init [path]         Write a starter .archon.json and its schema.
 archon schema [path]       Print the JSON Schema for .archon.json.
 archon hotspots [path]     Rank C# files by complexity x churn. Needs a git repository.
+archon debt [path]         Rank baseline entries by age x churn since acceptance. Needs git.
 archon --version           Print the version.
 ```
 
@@ -80,6 +81,14 @@ change to run against `archon format --check` instead. `init` takes `--force`, a
 touched it in the window, so files that are both hard to follow and frequently edited surface
 first. Either signal alone is a weak predictor of risk — complex code nobody touches is stable —
 but the two together are the classic hotspot heuristic.
+
+`debt` takes `--top <n>` (default 50, `0` for all), `--format console|json` and `--fail-over
+<age>` (e.g. `180d`). Every baseline entry has a birthday — the commit that first added its
+fingerprint to the baseline file, found the same way `git log -S` finds any string's history —
+and this ranks entries by how old that birthday is, multiplied by how much the file has changed
+since. A suppression sitting untouched on stable code is one thing; one sitting on code that has
+moved six times since it was accepted is quietly rotting. `--fail-over` turns that into a gate: a
+build fails once any accepted finding crosses the given age, so debt cannot go invisible forever.
 
 Exit codes are `0` when nothing reached the `--fail-on` level, `1` when something did, and `2`
 when the command could not run. A pipeline step is usually:
