@@ -286,6 +286,7 @@ accepted finding as a new one.
 | `AR0071` | information | file | maintainability | A local variable is declared and never read again |
 | `AR0072` | information | file | maintainability | An 'if' or ternary condition is a literal true/false, or compares an identifier to itself |
 | `AR0073` | hint | file | maintainability | Console.Write/WriteLine is called directly instead of through a logger |
+| `AR0080` | warning | workspace | sql | A column named in inline SQL does not exist on the table it targets (single-table statements only) |
 
 `Scope` is what a rule needs in order to decide, and therefore when it runs. A `file` rule runs on
 every save; a `project` rule also runs on save, over the project that owns the saved file; a

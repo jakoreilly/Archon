@@ -62,6 +62,7 @@ internal static class Program
         DebtRankingRules(harness);
         GitHistoryChurnSinceRules(harness);
         SchemaCatalogRules(harness);
+        SchemaAwareSqlRules(harness);
         TrendAnalyzerRules(harness);
         BaselineHistoryReadingRules(harness);
 
@@ -1588,8 +1589,8 @@ internal static class Program
         var registry = new RuleRegistry();
         registry.Add(new BuiltInRulePack());
 
-        harness.Equal("every built-in condition is registered", 32, registry.Descriptors.Count);
-        harness.Equal("rules that report several conditions are counted once as rules", 12, registry.Rules.Count);
+        harness.Equal("every built-in condition is registered", 33, registry.Descriptors.Count);
+        harness.Equal("rules that report several conditions are counted once as rules", 13, registry.Rules.Count);
         harness.Check("a descriptor can be found by id", registry.Find(SelectStarRule.Id) is not null);
         harness.Check("an unknown id resolves to nothing", registry.Find("ZZ9999") is null);
         harness.Check("registering the same pack twice is refused rather than duplicated",
@@ -2615,5 +2616,72 @@ internal static class Program
 
         harness.Check("an unknown table returns null rather than an empty TableSchema",
             SchemaCatalog.Empty.Find("dbo", "Nothing") is null);
+    }
+
+    internal static void SchemaAwareSqlRules(Harness harness)
+    {
+        harness.Group("Schema-aware inline SQL: unknown column detection");
+
+        var ddl = "CREATE TABLE dbo.Orders (Id int, CustomerId int, Total decimal);";
+
+        var unknownSelect = new TestWorkspace();
+        unknownSelect.Add("schema.sql", ddl);
+        unknownSelect.Add("a.cs", "class C { void M() { var sql = \"SELECT Id, Bogus FROM dbo.Orders\"; } }");
+        harness.Equal("flags an unknown column in a SELECT list", 1,
+            unknownSelect.Analyse().Findings.CountOf(SchemaAwareSqlRule.UnknownColumn));
+
+        var knownSelect = new TestWorkspace();
+        knownSelect.Add("schema.sql", ddl);
+        knownSelect.Add("a.cs", "class C { void M() { var sql = \"SELECT Id, CustomerId FROM dbo.Orders\"; } }");
+        harness.Equal("does not flag columns that exist", 0,
+            knownSelect.Analyse().Findings.CountOf(SchemaAwareSqlRule.UnknownColumn));
+
+        var joinedSelect = new TestWorkspace();
+        joinedSelect.Add("schema.sql", ddl + " CREATE TABLE dbo.Customers (Id int);");
+        joinedSelect.Add("a.cs", "class C { void M() { var sql = \"SELECT Bogus FROM dbo.Orders o JOIN dbo.Customers c ON o.CustomerId = c.Id\"; } }");
+        harness.Equal("a multi-table FROM clause is skipped entirely, even with a genuinely unknown column", 0,
+            joinedSelect.Analyse().Findings.CountOf(SchemaAwareSqlRule.UnknownColumn));
+
+        var unknownTable = new TestWorkspace();
+        unknownTable.Add("schema.sql", ddl);
+        unknownTable.Add("a.cs", "class C { void M() { var sql = \"SELECT Bogus FROM dbo.NotInAnyDdl\"; } }");
+        harness.Equal("a table absent from the catalog is skipped, not flagged as missing", 0,
+            unknownTable.Analyse().Findings.CountOf(SchemaAwareSqlRule.UnknownColumn));
+
+        var selectStar = new TestWorkspace();
+        selectStar.Add("schema.sql", ddl);
+        selectStar.Add("a.cs", "class C { void M() { var sql = \"SELECT * FROM dbo.Orders\"; } }");
+        harness.Equal("SELECT * has no column list to check (AR0023's job, not this rule's)", 0,
+            selectStar.Analyse().Findings.CountOf(SchemaAwareSqlRule.UnknownColumn));
+
+        var unknownInsert = new TestWorkspace();
+        unknownInsert.Add("schema.sql", ddl);
+        unknownInsert.Add("a.cs", "class C { void M() { var sql = \"INSERT INTO dbo.Orders (Id, Bogus) VALUES (1, 2)\"; } }");
+        harness.Equal("flags an unknown column in an INSERT column list", 1,
+            unknownInsert.Analyse().Findings.CountOf(SchemaAwareSqlRule.UnknownColumn));
+
+        var insertNoColumnList = new TestWorkspace();
+        insertNoColumnList.Add("schema.sql", ddl);
+        insertNoColumnList.Add("a.cs", "class C { void M() { var sql = \"INSERT INTO dbo.Orders VALUES (1, 2, 3)\"; } }");
+        harness.Equal("an INSERT with no explicit column list is skipped, never guessed at positionally", 0,
+            insertNoColumnList.Analyse().Findings.CountOf(SchemaAwareSqlRule.UnknownColumn));
+
+        var unknownUpdate = new TestWorkspace();
+        unknownUpdate.Add("schema.sql", ddl);
+        unknownUpdate.Add("a.cs", "class C { void M() { var sql = \"UPDATE dbo.Orders SET Bogus = 1 WHERE Id = 1\"; } }");
+        harness.Equal("flags an unknown column in an UPDATE SET clause", 1,
+            unknownUpdate.Analyse().Findings.CountOf(SchemaAwareSqlRule.UnknownColumn));
+
+        var updateWithFrom = new TestWorkspace();
+        updateWithFrom.Add("schema.sql", ddl + " CREATE TABLE dbo.Customers (Id int);");
+        updateWithFrom.Add("a.cs", "class C { void M() { var sql = \"UPDATE dbo.Orders SET Bogus = 1 FROM dbo.Orders o JOIN dbo.Customers c ON o.CustomerId = c.Id\"; } }");
+        harness.Equal("an UPDATE with its own FROM/JOIN is skipped entirely", 0,
+            updateWithFrom.Analyse().Findings.CountOf(SchemaAwareSqlRule.UnknownColumn));
+
+        var disabled = new TestWorkspace().WithSeverity(SchemaAwareSqlRule.UnknownColumn, "off");
+        disabled.Add("schema.sql", ddl);
+        disabled.Add("a.cs", "class C { void M() { var sql = \"SELECT Bogus FROM dbo.Orders\"; } }");
+        harness.Equal("honours 'AR0080': 'off'", 0,
+            disabled.Analyse().Findings.CountOf(SchemaAwareSqlRule.UnknownColumn));
     }
 }
