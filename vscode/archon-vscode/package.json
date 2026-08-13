@@ -55,6 +55,11 @@
         "icon": "$(search)"
       },
       {
+        "command": "archon.analyzeFolder",
+        "title": "Archon: Analyse Folder",
+        "icon": "$(search)"
+      },
+      {
         "command": "archon.writeBaseline",
         "title": "Archon: Accept Current Findings As Baseline"
       },
@@ -168,6 +173,10 @@
           "when": "false"
         },
         {
+          "command": "archon.analyzeFolder",
+          "when": "false"
+        },
+        {
           "command": "archon.copyHunkReference",
           "when": "false"
         },
@@ -188,6 +197,11 @@
         {
           "command": "archon.analyzeFile",
           "when": "resourceLangId == csharp || resourceLangId == sql",
+          "group": "archon@1"
+        },
+        {
+          "command": "archon.analyzeFolder",
+          "when": "explorerResourceIsFolder",
           "group": "archon@1"
         }
       ],
@@ -210,14 +224,19 @@
           "group": "archon@2"
         },
         {
-          "command": "archon.explainLine",
+          "command": "archon.setReviewBaseRef",
           "when": "resourceLangId == csharp || resourceLangId == sql",
           "group": "archon@3"
         },
         {
+          "command": "archon.explainLine",
+          "when": "resourceLangId == csharp || resourceLangId == sql",
+          "group": "archon@4"
+        },
+        {
           "command": "archon.showCallersHere",
           "when": "resourceLangId == csharp",
-          "group": "archon@4"
+          "group": "archon@5"
         }
       ],
       "view/title": [

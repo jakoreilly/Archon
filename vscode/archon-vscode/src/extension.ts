@@ -116,6 +116,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('archon.analyzeFile', (uri?: vscode.Uri, uris?: vscode.Uri[]) =>
       analyzeFiles(uri, uris)
     ),
+    vscode.commands.registerCommand('archon.analyzeFolder', (uri?: vscode.Uri, uris?: vscode.Uri[]) =>
+      analyzeFolders(uri, uris)
+    ),
     vscode.commands.registerCommand('archon.writeBaseline', writeBaseline),
     vscode.commands.registerCommand('archon.reload', reload),
     vscode.commands.registerCommand('archon.showOutput', () => output.show(true)),
@@ -504,6 +507,24 @@ async function analyzeFiles(uri?: vscode.Uri, uris?: vscode.Uri[]): Promise<void
       log(`could not open ${target.fsPath}: ${describe(error)}`);
     }
   }
+}
+
+/**
+ * Explorer context menu entry point for a folder (or multi-selected folders). Expands each
+ * folder to the supported files it contains and reuses `analyzeFiles` to analyse them, rather
+ * than a server-side workspace pass — a folder is not the whole workspace.
+ */
+async function analyzeFolders(uri?: vscode.Uri, uris?: vscode.Uri[]): Promise<void> {
+  const folders = uris && uris.length > 0 ? uris : uri ? [uri] : [];
+  const files: vscode.Uri[] = [];
+  for (const folder of folders) {
+    try {
+      files.push(...(await vscode.workspace.findFiles(new vscode.RelativePattern(folder, '**/*.{cs,sql}'))));
+    } catch (error) {
+      log(`could not scan ${folder.fsPath}: ${describe(error)}`);
+    }
+  }
+  await analyzeFiles(undefined, files);
 }
 
 async function analyzeWorkspace(): Promise<void> {
