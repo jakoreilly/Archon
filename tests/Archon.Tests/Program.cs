@@ -33,6 +33,7 @@ internal static class Program
         ComplexityRules(harness);
         UnusedSymbolsRules(harness);
         LogicHygieneRules(harness);
+        DisposalRules(harness);
         LayerRules(harness);
         LifetimeRules(harness);
         AsyncSafetyRules(harness);
@@ -363,6 +364,48 @@ internal static class Program
         unrelatedRegexLikeCall.Add("a.cs", "class C { void M() { Validator.IsMatch(\"x\", \"(a+)+\"); } }");
         harness.Equal("does not flag a same-named method on an unrelated type", 0,
             unrelatedRegexLikeCall.Analyse().Findings.CountOf(SecurityHotspotRule.CatastrophicBacktrackingRegex));
+
+        var commandTextConcat = new TestWorkspace();
+        commandTextConcat.Add("a.cs",
+            "class C { void M(System.Data.SqlClient.SqlCommand cmd, string table) { cmd.CommandText = \"SELECT * FROM \" + table; } }");
+        harness.Equal("flags CommandText built by concatenation", 1,
+            commandTextConcat.Analyse().Findings.CountOf(SecurityHotspotRule.SqlInjectionRisk));
+
+        var commandTextLiteral = new TestWorkspace();
+        commandTextLiteral.Add("a.cs",
+            "class C { void M(System.Data.SqlClient.SqlCommand cmd) { cmd.CommandText = \"SELECT Id FROM dbo.Orders\"; } }");
+        harness.Equal("does not flag CommandText assigned a plain literal", 0,
+            commandTextLiteral.Analyse().Findings.CountOf(SecurityHotspotRule.SqlInjectionRisk));
+
+        var commandTextLiteralConcat = new TestWorkspace();
+        commandTextLiteralConcat.Add("a.cs",
+            "class C { void M(System.Data.SqlClient.SqlCommand cmd) { cmd.CommandText = \"SELECT Id \" + \"FROM dbo.Orders\"; } }");
+        harness.Equal("does not flag CommandText built from literals only", 0,
+            commandTextLiteralConcat.Analyse().Findings.CountOf(SecurityHotspotRule.SqlInjectionRisk));
+
+        var sqlCommandInterpolated = new TestWorkspace();
+        sqlCommandInterpolated.Add("a.cs",
+            "class C { void M(string table) { var cmd = new System.Data.SqlClient.SqlCommand($\"SELECT * FROM {table}\"); } }");
+        harness.Equal("flags a SqlCommand constructed from an interpolated string", 1,
+            sqlCommandInterpolated.Analyse().Findings.CountOf(SecurityHotspotRule.SqlInjectionRisk));
+
+        var executeSqlRawConcat = new TestWorkspace();
+        executeSqlRawConcat.Add("a.cs",
+            "class C { void M(Microsoft.EntityFrameworkCore.DbContext db, string status) { db.Database.ExecuteSqlRaw(\"UPDATE T SET Status = \" + status); } }");
+        harness.Equal("flags ExecuteSqlRaw built by concatenation", 1,
+            executeSqlRawConcat.Analyse().Findings.CountOf(SecurityHotspotRule.SqlInjectionRisk));
+
+        var executeSqlInterpolatedSafe = new TestWorkspace();
+        executeSqlInterpolatedSafe.Add("a.cs",
+            "class C { void M(Microsoft.EntityFrameworkCore.DbContext db, string status) { db.Database.ExecuteSqlInterpolated($\"UPDATE T SET Status = {status}\"); } }");
+        harness.Equal("does not flag ExecuteSqlInterpolated, which parameterises its holes", 0,
+            executeSqlInterpolatedSafe.Analyse().Findings.CountOf(SecurityHotspotRule.SqlInjectionRisk));
+
+        var fromSqlRawLiteral = new TestWorkspace();
+        fromSqlRawLiteral.Add("a.cs",
+            "class C { void M(Microsoft.EntityFrameworkCore.DbSet<int> orders) { orders.FromSqlRaw(\"SELECT * FROM Orders\"); } }");
+        harness.Equal("does not flag FromSqlRaw given a plain literal", 0,
+            fromSqlRawLiteral.Analyse().Findings.CountOf(SecurityHotspotRule.SqlInjectionRisk));
     }
 
     internal static void ComplexityRules(Harness harness)
@@ -579,6 +622,63 @@ internal static class Program
             loggerCall.Analyse().Findings.CountOf(LogicHygieneRule.ConsoleUsedForOutput));
     }
 
+    internal static void DisposalRules(Harness harness)
+    {
+        harness.Group("Disposal");
+
+        var neverDisposed = new TestWorkspace();
+        neverDisposed.Add("a.cs",
+            "class C { void M() { var conn = new System.Data.SqlClient.SqlConnection(\"x\"); conn.Open(); } }");
+        harness.Equal("flags a disposable local never disposed", 1,
+            neverDisposed.Analyse().Findings.CountOf(DisposalRule.UndisposedLocal));
+
+        var usingDeclaration = new TestWorkspace();
+        usingDeclaration.Add("a.cs",
+            "class C { void M() { using var conn = new System.Data.SqlClient.SqlConnection(\"x\"); conn.Open(); } }");
+        harness.Equal("does not flag a 'using' declaration", 0,
+            usingDeclaration.Analyse().Findings.CountOf(DisposalRule.UndisposedLocal));
+
+        var usingStatement = new TestWorkspace();
+        usingStatement.Add("a.cs",
+            "class C { void M() { var conn = new System.Data.SqlClient.SqlConnection(\"x\"); using (conn) { conn.Open(); } } }");
+        harness.Equal("does not flag a plain local later wrapped in a 'using' statement", 0,
+            usingStatement.Analyse().Findings.CountOf(DisposalRule.UndisposedLocal));
+
+        var explicitDispose = new TestWorkspace();
+        explicitDispose.Add("a.cs",
+            "class C { void M() { var conn = new System.Data.SqlClient.SqlConnection(\"x\"); conn.Open(); conn.Dispose(); } }");
+        harness.Equal("does not flag a local explicitly disposed", 0,
+            explicitDispose.Analyse().Findings.CountOf(DisposalRule.UndisposedLocal));
+
+        var passedOn = new TestWorkspace();
+        passedOn.Add("a.cs",
+            "class C { void M() { var conn = new System.Data.SqlClient.SqlConnection(\"x\"); Register(conn); } void Register(object o) { } }");
+        harness.Equal("does not flag a local passed on as an argument, which may take ownership", 0,
+            passedOn.Analyse().Findings.CountOf(DisposalRule.UndisposedLocal));
+
+        var returned = new TestWorkspace();
+        returned.Add("a.cs",
+            "class C { object M() { var conn = new System.Data.SqlClient.SqlConnection(\"x\"); return conn; } }");
+        harness.Equal("does not flag a local that is returned", 0,
+            returned.Analyse().Findings.CountOf(DisposalRule.UndisposedLocal));
+
+        var assignedToField = new TestWorkspace();
+        assignedToField.Add("a.cs",
+            "class C { object _held; void M() { var conn = new System.Data.SqlClient.SqlConnection(\"x\"); _held = conn; } }");
+        harness.Equal("does not flag a local assigned onward to a field", 0,
+            assignedToField.Analyse().Findings.CountOf(DisposalRule.UndisposedLocal));
+
+        var unrelatedType = new TestWorkspace();
+        unrelatedType.Add("a.cs", "class C { void M() { var order = new WidgetOrder(); } } class WidgetOrder { }");
+        harness.Equal("does not flag a type outside the recognised disposable set", 0,
+            unrelatedType.Analyse().Findings.CountOf(DisposalRule.UndisposedLocal));
+
+        var httpClient = new TestWorkspace();
+        httpClient.Add("a.cs", "class C { void M() { var client = new System.Net.Http.HttpClient(); } }");
+        harness.Equal("does not flag HttpClient, whose per-instance disposal is its own well-known mistake", 0,
+            httpClient.Analyse().Findings.CountOf(DisposalRule.UndisposedLocal));
+    }
+
     internal static void AsyncSafetyRules(Harness harness)
     {
         harness.Group("Async safety rules");
@@ -662,6 +762,41 @@ internal static class Program
         suppressed.Add("a.cs", "class C { async void Go() { } // archon-ignore[AR0012] required by the framework\n }");
         harness.Equal("honours a suppression marker on an async void method", 0,
             suppressed.Analyse().Findings.CountOf(AsyncSafetyRule.AsyncVoid));
+
+        var rethrowEx = new TestWorkspace();
+        rethrowEx.Add("a.cs", "class C { void M() { try { } catch (System.Exception ex) { throw ex; } } }");
+        harness.Equal("flags 'throw ex;' inside a catch block", 1,
+            rethrowEx.Analyse().Findings.CountOf(AsyncSafetyRule.RethrowLosesStackTrace));
+
+        var bareRethrow = new TestWorkspace();
+        bareRethrow.Add("a.cs", "class C { void M() { try { } catch (System.Exception ex) { Log(ex); throw; } } }");
+        harness.Equal("does not flag a bare 'throw;'", 0,
+            bareRethrow.Analyse().Findings.CountOf(AsyncSafetyRule.RethrowLosesStackTrace));
+
+        var wrapped = new TestWorkspace();
+        wrapped.Add("a.cs",
+            "class C { void M() { try { } catch (System.Exception ex) { throw new System.InvalidOperationException(\"x\", ex); } } }");
+        harness.Equal("does not flag an exception wrapped with the original as inner exception", 0,
+            wrapped.Analyse().Findings.CountOf(AsyncSafetyRule.RethrowLosesStackTrace));
+
+        var nestedCatchSameName = new TestWorkspace();
+        nestedCatchSameName.Add("a.cs", """
+            class C
+            {
+                void M()
+                {
+                    try { }
+                    catch (System.Exception ex)
+                    {
+                        try { }
+                        catch (System.Exception ex2) { throw ex2; }
+                        Log(ex);
+                    }
+                }
+            }
+            """);
+        harness.Equal("attributes a nested catch's rethrow to the nested clause, not the outer one", 1,
+            nestedCatchSameName.Analyse().Findings.CountOf(AsyncSafetyRule.RethrowLosesStackTrace));
     }
 
     internal static void PerfHintRules(Harness harness)
@@ -1589,8 +1724,8 @@ internal static class Program
         var registry = new RuleRegistry();
         registry.Add(new BuiltInRulePack());
 
-        harness.Equal("every built-in condition is registered", 33, registry.Descriptors.Count);
-        harness.Equal("rules that report several conditions are counted once as rules", 13, registry.Rules.Count);
+        harness.Equal("every built-in condition is registered", 36, registry.Descriptors.Count);
+        harness.Equal("rules that report several conditions are counted once as rules", 14, registry.Rules.Count);
         harness.Check("a descriptor can be found by id", registry.Find(SelectStarRule.Id) is not null);
         harness.Check("an unknown id resolves to nothing", registry.Find("ZZ9999") is null);
         harness.Check("registering the same pack twice is refused rather than duplicated",

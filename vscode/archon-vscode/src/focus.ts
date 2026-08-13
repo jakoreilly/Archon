@@ -1,10 +1,11 @@
 import * as vscode from 'vscode';
-import { DiffHunk, DiffResult, changedLines, fileDiff, resolveBaseRef } from './diff';
+import { DiffHunk, DiffResult, changedLines, clearRenameCache, fileDiff, resolveBaseRef } from './diff';
 import { findRepositoryRoot } from './git';
 
 interface FileFocus {
   hunks: DiffHunk[];
   reason?: string;
+  detail?: string;
 }
 
 /**
@@ -77,6 +78,7 @@ export class FocusMode {
     this.active = false;
     this.baseRef = undefined;
     this.byUri.clear();
+    clearRenameCache();
     for (const editor of vscode.window.visibleTextEditors) {
       editor.setDecorations(this.dimmed, []);
     }
@@ -119,12 +121,13 @@ export class FocusMode {
       return;
     }
 
-    const result: DiffResult = await fileDiff(repositoryRoot, document.uri.fsPath, this.baseRef);
+    const ignoreWhitespace = vscode.workspace.getConfiguration('archon').get<boolean>('focus.ignoreWhitespace', false);
+    const result: DiffResult = await fileDiff(repositoryRoot, document.uri.fsPath, this.baseRef, { ignoreWhitespace });
     if (!this.active) {
       return;
     }
 
-    this.byUri.set(document.uri.toString(), { hunks: result.hunks, reason: result.reason });
+    this.byUri.set(document.uri.toString(), { hunks: result.hunks, reason: result.reason, detail: result.detail });
     this.paint(document);
     this.lensChanged.fire();
     this.onStateChanged();
@@ -211,6 +214,9 @@ export class FocusMode {
     if (focus.reason === 'too-large') {
       return `the diff vs ${this.shortRef()} is too large to read`;
     }
+    if (focus.reason === 'error') {
+      return `git failed comparing against ${this.shortRef()}${focus.detail ? ` — ${focus.detail}` : ''}`;
+    }
     if (focus.hunks.length === 0) {
       return `unchanged vs ${this.shortRef()}`;
     }
@@ -256,7 +262,12 @@ export class FocusMode {
 export class FocusLensProvider implements vscode.CodeLensProvider {
   public readonly onDidChangeCodeLenses: vscode.Event<void>;
 
-  constructor(private readonly focus: FocusMode) {
+  constructor(
+    private readonly focus: FocusMode,
+    /** Findings for a file, so a hunk's lens can say how many land inside it without a second pass
+     * over the status bar's aggregate count. */
+    private readonly getFindings: (uri: vscode.Uri) => readonly { startLine: number }[]
+  ) {
     this.onDidChangeCodeLenses = focus.onDidChangeLenses;
   }
 
@@ -265,11 +276,16 @@ export class FocusLensProvider implements vscode.CodeLensProvider {
     if (!hunks) {
       return [];
     }
+    const findings = this.getFindings(document.uri);
     const lastLine = Math.max(0, document.lineCount - 1);
     return hunks.map((hunk) => {
       const line = Math.min(hunk.startLine, lastLine);
+      const inside = findings.filter(
+        (finding) => finding.startLine >= hunk.startLine && finding.startLine < hunk.startLine + hunk.lineCount
+      ).length;
+      const suffix = inside > 0 ? ` · ${inside} finding${inside === 1 ? '' : 's'}` : '';
       return new vscode.CodeLens(new vscode.Range(line, 0, line, 0), {
-        title: `+${hunk.addedLines} -${hunk.removedLines} vs base`,
+        title: `+${hunk.addedLines} -${hunk.removedLines} vs base${suffix}`,
         command: 'archon.copyHunkReference',
         arguments: [document.uri, hunk]
       });

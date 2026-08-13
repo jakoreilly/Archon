@@ -1,5 +1,5 @@
 import { upsertRuleSeverity } from '../archonConfigEdit';
-import { changedLines, parseDiffHunks } from '../diff';
+import { changedLines, parseDiffHunks, parseRenameNameStatus } from '../diff';
 import { describeAge, escapeMarkdown, findIssueKey, issueUrl, parseBlame, splitMessage } from '../history';
 
 let checks = 0;
@@ -39,6 +39,11 @@ equal('a later hunk starts where git says it does', hunks[2].startLine, 89);
 equal('changed lines cover a later hunk to its last line', lines.has(93), true);
 equal('a line past a hunk is not changed', lines.has(94), false);
 equal('a line before a hunk is not changed', lines.has(88), false);
+
+const renames = parseRenameNameStatus('R079\told.txt\tnew.txt\nM\tunrelated.txt');
+equal('a rename line maps new path to old path', renames.get('new.txt'), 'old.txt');
+equal('a plain modify line contributes no rename', renames.has('unrelated.txt'), false);
+equal('an unmapped path has no rename source', parseRenameNameStatus('').get('anything.txt'), undefined);
 
 const porcelain = [
   '9f3c1d4a5b6c7d8e9f0a1b2c3d4e5f6071829304 12 12 1',
