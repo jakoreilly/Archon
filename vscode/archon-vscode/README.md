@@ -66,6 +66,13 @@ are no resolved symbols to match against.
 - A method reached only through an interface, a container or reflection shows no callers. That is a
   limit of the analysis, not evidence the method is unused.
 
+The call trace diagram carries the same ambiguity, but compounded: it follows callers of callers, so
+a single common name matched loosely is enough to drag most of a codebase into the picture. It
+therefore stops at any node whose name and argument count match more than one member, drawing it
+dashed and suffixed `…`. Such a node has callers of its own that were deliberately not followed —
+which of the members sharing that name they reach cannot be known without a compilation. The
+diagram's direct callers of the traced method always agree with the **Show Callers** list.
+
 ## When it runs
 
 Saving a `.cs` or `.sql` file re-analyses that file with the rules a single file can decide.

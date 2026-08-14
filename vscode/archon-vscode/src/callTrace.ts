@@ -56,11 +56,18 @@ export async function showCallTrace(
 
   const rootKey = reply.rootKey ?? method.methodName;
   const rootName = reply.rootName ?? method.methodName;
-  reveal(extensionUri, rootKey, rootName, reply.edges, reply.bounded ?? false);
+  reveal(extensionUri, rootKey, rootName, reply.edges, reply.bounded ?? false, reply.ambiguousKeys ?? []);
   log(`traced ${reply.edges.length} call edge(s) reaching ${method.methodName} in ${reply.elapsedMilliseconds}ms`);
 }
 
-function reveal(extensionUri: vscode.Uri, rootKey: string, rootName: string, edges: TraceEdgeInfo[], bounded: boolean): void {
+function reveal(
+  extensionUri: vscode.Uri,
+  rootKey: string,
+  rootName: string,
+  edges: TraceEdgeInfo[],
+  bounded: boolean,
+  ambiguousKeys: string[]
+): void {
   currentRootName = rootName;
 
   if (!panel) {
@@ -72,21 +79,37 @@ function reveal(extensionUri: vscode.Uri, rootKey: string, rootName: string, edg
     panel.onDidDispose(() => {
       panel = undefined;
     });
-    panel.webview.onDidReceiveMessage((message) => void handleExport(message));
+    panel.webview.onDidReceiveMessage((message) => void handleMessage(message));
   } else {
     panel.reveal(vscode.ViewColumn.Beside);
   }
 
   panel.title = `Archon: Callers of ${rootName}`;
-  panel.webview.html = renderHtml(panel.webview, extensionUri, rootKey, rootName, edges, bounded);
+  panel.webview.html = renderHtml(panel.webview, extensionUri, rootKey, rootName, edges, bounded, ambiguousKeys);
 }
 
 /**
- * Saves a diagram the webview has already rasterised or serialised — the export button hands over
- * finished SVG markup or a PNG data URL because a webview cannot reach the filesystem itself.
+ * Handles messages from the webview: exporting a diagram it has already rasterised or serialised
+ * (a webview cannot reach the filesystem itself), and copying the raw Mermaid source to the
+ * clipboard (a webview cannot reach the system clipboard directly either).
  */
-async function handleExport(message: unknown): Promise<void> {
-  if (typeof message !== 'object' || message === null || (message as { type?: unknown }).type !== 'export') {
+async function handleMessage(message: unknown): Promise<void> {
+  if (typeof message !== 'object' || message === null) {
+    return;
+  }
+  const { type } = message as { type?: unknown };
+
+  if (type === 'copy') {
+    const { data } = message as { data?: unknown };
+    if (typeof data !== 'string') {
+      return;
+    }
+    await vscode.env.clipboard.writeText(data);
+    void vscode.window.showInformationMessage('Archon: copied Mermaid diagram source to clipboard.');
+    return;
+  }
+
+  if (type !== 'export') {
     return;
   }
   const { format, data } = message as { format?: unknown; data?: unknown };
@@ -118,16 +141,20 @@ function escapeLabel(name: string): string {
   return name.replace(/"/g, '&quot;');
 }
 
-function buildDiagram(rootKey: string, edges: TraceEdgeInfo[]): string {
+function buildDiagram(rootKey: string, edges: TraceEdgeInfo[], ambiguousKeys: string[]): string {
   const lines = ['graph TD'];
   const declared = new Set<string>();
+  const ambiguous = new Set(ambiguousKeys);
 
   const declare = (key: string, name: string) => {
     if (declared.has(key)) {
       return;
     }
     declared.add(key);
-    lines.push(`  ${nodeId(key)}["${escapeLabel(name)}"]`);
+    // The ellipsis marks a node with callers of its own that the walk would not follow, so a node
+    // drawn without one can be read as genuinely having no further callers.
+    const label = ambiguous.has(key) ? `${escapeLabel(name)} …` : escapeLabel(name);
+    lines.push(`  ${nodeId(key)}["${label}"]`);
   };
 
   for (const edge of edges) {
@@ -136,8 +163,15 @@ function buildDiagram(rootKey: string, edges: TraceEdgeInfo[]): string {
     lines.push(`  ${nodeId(edge.fromKey)} --> ${nodeId(edge.toKey)}`);
   }
 
+  for (const key of ambiguousKeys) {
+    if (declared.has(key)) {
+      lines.push(`  class ${nodeId(key)} archonAmbiguous`);
+    }
+  }
+
   lines.push(`  class ${nodeId(rootKey)} archonRoot`);
   lines.push('  classDef archonRoot fill:#5b8def,stroke:#2f5fc4,color:#ffffff,font-weight:bold;');
+  lines.push('  classDef archonAmbiguous stroke-dasharray:4 3,stroke:#b58900;');
   return lines.join('\n');
 }
 
@@ -147,7 +181,8 @@ function renderHtml(
   rootKey: string,
   rootName: string,
   edges: TraceEdgeInfo[],
-  bounded: boolean
+  bounded: boolean,
+  ambiguousKeys: string[]
 ): string {
   const script = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'mermaid.min.js'));
   const nonce = Array.from({ length: 32 }, () => Math.floor(Math.random() * 36).toString(36)).join('');
@@ -159,10 +194,17 @@ function renderHtml(
 </body></html>`;
   }
 
-  const diagram = buildDiagram(rootKey, edges);
+  const diagram = buildDiagram(rootKey, edges, ambiguousKeys);
   const boundedNote = bounded
     ? `<p class="note">Cut off at the configured depth/node limit — this is part of the chain, not all of it.</p>`
     : '';
+  const single = ambiguousKeys.length === 1;
+  const ambiguousNote =
+    ambiguousKeys.length > 0
+      ? `<p class="note">${ambiguousKeys.length} node${single ? '' : 's'} marked <span class="ambiguous-swatch"></span> (…) ${
+          single ? 'shares its name with other members' : 'share their names with other members'
+        }, so the chain is not followed past ${single ? 'it' : 'them'}: without a compilation there is no way to tell which of those members the callers further up actually reach.</p>`
+      : '';
 
   return `<!DOCTYPE html>
 <html>
@@ -173,6 +215,10 @@ function renderHtml(
   body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); padding: 0 12px; }
   h2 { font-weight: 600; }
   .note { opacity: 0.75; font-size: 0.9em; }
+  .ambiguous-swatch {
+    display: inline-block; width: 1.6em; height: 0; vertical-align: middle;
+    border-top: 2px dashed #b58900;
+  }
   .toolbar { display: flex; gap: 6px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
   .toolbar button {
     background: var(--vscode-button-secondaryBackground, #3a3d41);
@@ -195,6 +241,7 @@ function renderHtml(
 <h2>Callers reaching ${escapeLabel(rootName)}</h2>
 <p class="note">Matched by name and argument count, not resolved symbols — an approximation, not an exact call graph.</p>
 ${boundedNote}
+${ambiguousNote}
 <div class="toolbar">
   <button id="zoom-out" title="Zoom out">−</button>
   <span id="zoom-level" class="zoom-level">100%</span>
@@ -203,6 +250,7 @@ ${boundedNote}
   <span class="spacer"></span>
   <button id="export-svg" title="Save as SVG">Export SVG</button>
   <button id="export-png" title="Save as PNG">Export PNG</button>
+  <button id="copy-mermaid" title="Copy Mermaid diagram source">Copy Mermaid</button>
 </div>
 <div id="viewport">
   <div id="stage">
@@ -213,6 +261,7 @@ ${boundedNote}
 <script nonce="${nonce}">
 (function () {
   const vscodeApi = acquireVsCodeApi();
+  const diagramSource = ${JSON.stringify(diagram).replace(/</g, '\\u003c')};
   const theme = document.body.classList.contains('vscode-dark') || document.body.classList.contains('vscode-high-contrast')
     ? 'dark'
     : 'default';
@@ -343,6 +392,10 @@ ${boundedNote}
       vscodeApi.postMessage({ type: 'export', format: 'png', data: canvas.toDataURL('image/png') });
     };
     image.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(serialisedSvg())));
+  });
+
+  document.getElementById('copy-mermaid').addEventListener('click', function () {
+    vscodeApi.postMessage({ type: 'copy', data: diagramSource });
   });
 })();
 </script>

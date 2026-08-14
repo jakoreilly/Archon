@@ -47,9 +47,15 @@ public sealed record TraceEdge(string FromKey, string FromName, string ToKey, st
 /// <summary>
 /// The caller chain reaching one method, out to a bounded depth and node count. <see cref="Bounded"/>
 /// marks a chain cut short by either bound, so a trace that stops at the edge of the graph is never
-/// mistaken for one that ran out of callers.
+/// mistaken for one that ran out of callers. <see cref="AmbiguousKeys"/> names the nodes the walk
+/// declined to expand because their key matches several declarations — shown, but not walked through.
 /// </summary>
-public sealed record TraceResult(string RootKey, string RootName, IReadOnlyList<TraceEdge> Edges, bool Bounded);
+public sealed record TraceResult(
+    string RootKey,
+    string RootName,
+    IReadOnlyList<TraceEdge> Edges,
+    bool Bounded,
+    IReadOnlyList<string> AmbiguousKeys);
 
 /// <summary>
 /// A reverse call graph over the whole workspace, held between requests and updated one file at a
@@ -81,6 +87,7 @@ public sealed class CallGraph
     private readonly Dictionary<string, string> _projectDirectories = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _gate = new();
     private Dictionary<string, List<MethodNode>>? _callersByKey;
+    private Dictionary<string, int>? _declarationsByKey;
 
     /// <summary>
     /// Covering-test counts already computed against the current edge set. Every method in a file
@@ -114,6 +121,7 @@ public sealed class CallGraph
     private void InvalidateEdges()
     {
         _callersByKey = null;
+        _declarationsByKey = null;
         _coverage.Clear();
     }
 
@@ -173,6 +181,16 @@ public sealed class CallGraph
     /// distinct methods, whichever comes first. Unlike <see cref="Impact"/>, which reports only the
     /// direct callers of each method in a file, this keeps the path — the shape a caller-of-callers
     /// diagram needs — at the cost of being scoped to one method rather than a whole file.
+    ///
+    /// The walk stops at any node whose key matches more than one declaration in the workspace. With
+    /// no compilation to resolve symbols against, a key like <c>Clear/0</c> names every member called
+    /// <c>Clear</c> in the workspace at once; one hop of that ambiguity is the approximation the
+    /// caller list already carries, but continuing through it compounds — the callers found beyond
+    /// such a node belong to whichever declaration they actually called, which cannot be known, so a
+    /// six-hop walk through a handful of common names drags in most of the codebase. Those nodes are
+    /// still reported, so the diagram shows where the chain stops and why; they are simply not
+    /// expanded. The root is always expanded, because its direct callers are exactly what the caller
+    /// list shows and the two must agree.
     /// </summary>
     public TraceResult? Trace(
         WorkspaceModel workspace,
@@ -200,10 +218,12 @@ public sealed class CallGraph
             }
 
             Dictionary<string, List<MethodNode>> callers = CallersByKey();
+            Dictionary<string, int> declarations = DeclarationsByKey();
             var nameByKey = new Dictionary<string, string>(StringComparer.Ordinal) { [root.Key] = root.Name };
             var edges = new List<TraceEdge>();
             var edgeKeys = new HashSet<string>(StringComparer.Ordinal);
             var visited = new HashSet<string>(StringComparer.Ordinal) { root.Key };
+            var ambiguous = new HashSet<string>(StringComparer.Ordinal);
             var frontier = new Queue<(string Key, int Depth)>();
             frontier.Enqueue((root.Key, 0));
             bool bounded = false;
@@ -219,6 +239,14 @@ public sealed class CallGraph
                 }
                 if (!callers.TryGetValue(key, out List<MethodNode>? incoming))
                 {
+                    continue;
+                }
+                // Recorded rather than silently dropped: a node left unexpanded because its name is
+                // shared has callers, and saying so is the difference between "the chain ends here"
+                // and "the chain cannot be followed from here".
+                if (depth > 0 && declarations.GetValueOrDefault(key) > 1)
+                {
+                    ambiguous.Add(key);
                     continue;
                 }
 
@@ -242,7 +270,12 @@ public sealed class CallGraph
                 }
             }
 
-            return new TraceResult(root.Key, root.Name, edges, bounded);
+            return new TraceResult(
+                root.Key,
+                root.Name,
+                edges,
+                bounded,
+                ambiguous.OrderBy(k => k, StringComparer.Ordinal).ToList());
         }
     }
 
@@ -478,6 +511,28 @@ public sealed class CallGraph
         }
         _callersByKey = callers;
         return callers;
+    }
+
+    /// <summary>
+    /// How many members in the workspace each key names. A count above one marks a key that cannot
+    /// identify a single declaration — the graph keys on name and argument count, so every
+    /// <c>Clear()</c> in the workspace shares one key — which is what <see cref="Trace"/> uses to
+    /// decide it has run out of evidence rather than out of callers.
+    /// </summary>
+    private Dictionary<string, int> DeclarationsByKey()
+    {
+        if (_declarationsByKey is not null)
+        {
+            return _declarationsByKey;
+        }
+
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (MethodNode node in _methodsByFile.Values.SelectMany(m => m))
+        {
+            counts[node.Key] = counts.GetValueOrDefault(node.Key) + 1;
+        }
+        _declarationsByKey = counts;
+        return counts;
     }
 
     /// <summary>

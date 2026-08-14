@@ -42,6 +42,7 @@ internal static class Program
         ProjectCycleRules(harness);
         CallGraphChecks(harness);
         CallGraphMemberChecks(harness);
+        CallGraphTraceChecks(harness);
         SuppressionRules(harness);
         BaselineRules(harness);
         BaselineStabilityRules(harness);
@@ -1257,6 +1258,119 @@ internal static class Program
             result.Methods.Count(m => m.MethodName == "Value") == 1);
         harness.Equal("counts a write and a separate read of an auto-property as two callers", 2, Count("Auto"));
         harness.Equal("counts a write to a field as a caller", 1, Count("Label"));
+
+        Directory.Delete(root, recursive: true);
+    }
+
+    /// <summary>
+    /// The trace keeps the path to a method rather than counting its callers, so every hop multiplies
+    /// whatever ambiguity the previous one carried. Keying on name and argument count means a common
+    /// name matches unrelated members, and following one is enough to pull most of a codebase into a
+    /// diagram that claims to show what reaches a single method.
+    /// </summary>
+    internal static void CallGraphTraceChecks(Harness harness)
+    {
+        harness.Group("Call trace");
+
+        string root = Path.Combine(Path.GetTempPath(), "archon-calltrace-tests");
+        if (Directory.Exists(root))
+        {
+            Directory.Delete(root, recursive: true);
+        }
+        Directory.CreateDirectory(root);
+        File.WriteAllText(Path.Combine(root, "App.csproj"), "<Project Sdk=\"Microsoft.NET.Sdk\" />");
+
+        string target = Path.Combine(root, "Target.cs");
+        File.WriteAllText(target, """
+            namespace App
+            {
+                class Target
+                {
+                    public void Leaf() { }
+                    public void Duplicated() { }
+                }
+            }
+            """);
+
+        File.WriteAllText(Path.Combine(root, "Chain.cs"), """
+            namespace App
+            {
+                class Chain
+                {
+                    public void UniqueMiddle(Target t) { t.Leaf(); }
+                    public void TopOfChain(Target t) { UniqueMiddle(t); }
+                }
+
+                // `Reset/0` names two members, so nothing above it can be attributed to this one.
+                class Shared
+                {
+                    public void Reset(Target t) { t.Leaf(); }
+                }
+
+                class AlsoShared
+                {
+                    public void Reset(Target t) { }
+                }
+
+                class Beyond
+                {
+                    public void CallsReset(Shared s, Target t) { s.Reset(t); }
+                }
+
+                // A second `Duplicated/0`, so the traced root's own name is ambiguous.
+                class OtherHolder
+                {
+                    public void Duplicated() { }
+                }
+
+                class UsesDuplicated
+                {
+                    public void CallsDuplicated(Target t) { t.Duplicated(); }
+                }
+            }
+            """);
+
+        var sources = new SourceCache();
+        var graph = new CallGraph(sources);
+        WorkspaceModel workspace = WorkspaceModel.Discover(root, ArchonConfig.DefaultExcludes);
+        ImpactResult impact = graph.Impact(workspace, target, maxDepth: 6, maxCallers: 50);
+
+        int LineOf(string name) => impact.Methods.First(m => m.MethodName == name).Line;
+        TraceResult leaf = graph.Trace(workspace, target, LineOf("Leaf"), maxDepth: 6, maxNodes: 60)!;
+        HashSet<string> leafNodes = leaf.Edges
+            .SelectMany(e => new[] { e.FromKey, e.ToKey })
+            .ToHashSet(StringComparer.Ordinal);
+
+        harness.Check("walks on through a name that identifies exactly one member",
+            leafNodes.Contains("TopOfChain/1"));
+        harness.Check("stops at a name several members share",
+            !leafNodes.Contains("CallsReset/2"));
+        harness.Check("names the node it stopped at, so the diagram can say why",
+            leaf.AmbiguousKeys.SequenceEqual(new[] { "Reset/1" }));
+        harness.Check("still shows the node it declined to walk through",
+            leafNodes.Contains("Reset/1"));
+
+        harness.Equal("the root's direct callers match the caller list the quick pick shows",
+            impact.Methods.First(m => m.MethodName == "Leaf").Callers
+                .Select(c => c.MethodName).Distinct(StringComparer.Ordinal).Count(),
+            leaf.Edges.Count(e => e.ToKey == leaf.RootKey));
+
+        // Were the root treated like any other node, tracing a method whose name is shared would
+        // produce an empty diagram — and disagree with a caller list that happily lists them.
+        TraceResult duplicated = graph.Trace(workspace, target, LineOf("Duplicated"), maxDepth: 6, maxNodes: 60)!;
+        harness.Check("expands the root even when its own name is shared",
+            duplicated.Edges.Any(e => e.FromKey == "CallsDuplicated/1" && e.ToKey == "Duplicated/0"));
+        harness.Check("does not mark the root itself as a node it stopped at",
+            !duplicated.AmbiguousKeys.Contains("Duplicated/0"));
+
+        harness.Check("reports no ambiguity for a chain of names that each identify one member",
+            graph.Trace(workspace, Path.Combine(root, "Chain.cs"),
+                graph.Impact(workspace, Path.Combine(root, "Chain.cs"), maxDepth: 6, maxCallers: 50)
+                    .Methods.First(m => m.MethodName == "TopOfChain").Line,
+                maxDepth: 6, maxNodes: 60)!.AmbiguousKeys.Count == 0);
+
+        harness.Check("reports nothing for a line holding no method",
+            graph.Trace(workspace, target, 0, maxDepth: 6, maxNodes: 60) is null);
 
         Directory.Delete(root, recursive: true);
     }

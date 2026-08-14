@@ -80,6 +80,8 @@ export interface TraceReply {
   rootName?: string;
   edges?: TraceEdgeInfo[];
   bounded?: boolean;
+  /** Nodes the walk showed but declined to expand, their name matching several declarations. */
+  ambiguousKeys?: string[];
   elapsedMilliseconds: number;
 }
 

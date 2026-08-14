@@ -314,6 +314,12 @@ internal static class Program
             });
         }
 
+        var ambiguousKeys = new JsonArray();
+        foreach (string key in result.AmbiguousKeys)
+        {
+            ambiguousKeys.Add(key);
+        }
+
         return new JsonObject
         {
             ["found"] = true,
@@ -321,6 +327,7 @@ internal static class Program
             ["rootName"] = result.RootName,
             ["edges"] = edges,
             ["bounded"] = result.Bounded,
+            ["ambiguousKeys"] = ambiguousKeys,
             ["elapsedMilliseconds"] = stopwatch.ElapsedMilliseconds
         };
     }
