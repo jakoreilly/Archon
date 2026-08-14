@@ -2,7 +2,7 @@
   "name": "archon-analysis",
   "displayName": "Archon for C# and SQL",
   "description": "Architecture, lifetime and SQL rules for C# and T-SQL, from one analysis process.",
-  "version": "0.4.0",
+  "version": "0.4.2",
   "publisher": "jakoreilly",
   "license": "MIT",
   "icon": "icon.png",
@@ -357,13 +357,13 @@
         "archon.impact.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Show how many callers and covering tests each C# method has, above the method."
+          "description": "Show how many callers and covering tests each C# method, constructor, property or field has, above its declaration."
         },
         "archon.impact.minimumReferences": {
           "type": "number",
           "default": 1,
           "minimum": 0,
-          "description": "Hide the impact line for methods with fewer callers than this. 0 shows it on every method, including those with no callers found."
+          "description": "Hide the impact line for a member with fewer callers than this. 0 shows it on every member, including those with no callers found."
         },
         "archon.impact.maxDepth": {
           "type": "number",
@@ -375,7 +375,7 @@
           "type": "number",
           "default": 60,
           "minimum": 1,
-          "description": "The most methods to include in a call trace diagram. A trace cut off by this limit is marked as bounded rather than complete."
+          "description": "The most members to include in a call trace diagram. A trace cut off by this limit is marked as bounded rather than complete."
         },
         "archon.history.enabled": {
           "type": "boolean",

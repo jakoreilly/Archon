@@ -58,8 +58,9 @@ public sealed record TraceResult(string RootKey, string RootName, IReadOnlyList<
 /// A call is matched on name and argument count rather than on a resolved symbol, because no
 /// compilation is available. Overloads that share a name and argument count are therefore counted
 /// together, extension methods are attributed to the name as written, and calls made through
-/// reflection, dynamic dispatch or a container are invisible. Every number this produces is an
-/// approximation of how far a change reaches, never an exact reference count.
+/// reflection, dynamic dispatch or a container are invisible. A property or field read is matched on
+/// name alone, so it carries the same ambiguity a zero-argument method overload would. Every number
+/// this produces is an approximation of how far a change reaches, never an exact reference count.
 ///
 /// Parsing goes through the shared source cache, so a file already parsed for a rule is not parsed
 /// again here, and a save re-parses only the file that changed.
@@ -274,10 +275,12 @@ public sealed class CallGraph
     }
 
     /// <summary>
-    /// Indexes every member that can hold a call, not only ordinary methods. Constructors, property
-    /// and event accessors and local functions all make calls, and a codebase that injects its
-    /// dependencies makes a great many of them from constructors: counting only method bodies
-    /// reports nothing for a method that is in constant use.
+    /// Indexes every member that can either make a call or be reached by one, not only ordinary
+    /// methods. Constructors, property and event accessors and local functions all make calls, and a
+    /// codebase that injects its dependencies makes a great many of them from constructors: counting
+    /// only method bodies reports nothing for a method that is in constant use. Properties and fields
+    /// are indexed even without a body of their own, since a plain read (<c>x.Total</c>) reaches them
+    /// exactly as a call reaches a method.
     /// </summary>
     private List<MethodNode> IndexFile(string path)
     {
@@ -335,10 +338,10 @@ public sealed class CallGraph
                     break;
 
                 // A property is indexed once, covering every accessor, because a call site writes
-                // the property name rather than the accessor. Auto-properties are skipped: they
-                // hold no calls, so a node for one would only put an empty lens on every field of
-                // every data carrier.
-                case BasePropertyDeclarationSyntax property when HasBody(property):
+                // the property name rather than the accessor. It is indexed whether or not it has a
+                // body: an auto-property makes no calls of its own, but `CalleeKeys` still credits it
+                // with every `x.Name` read elsewhere, which is the whole point of indexing it.
+                case BasePropertyDeclarationSyntax property:
                     SyntaxToken name = property switch
                     {
                         PropertyDeclarationSyntax declared => declared.Identifier,
@@ -348,7 +351,17 @@ public sealed class CallGraph
                     };
                     if (name != default)
                     {
-                        Add(name, 0, property, isTest: false);
+                        Add(name, 0, HasBody(property) ? property : null, isTest: false);
+                    }
+                    break;
+
+                // A field is indexed once per declarator (`int a, b;` is two fields), under its own
+                // initializer if it has one, so `x.Total` reads elsewhere can credit it the same way
+                // a property is credited.
+                case FieldDeclarationSyntax field:
+                    foreach (VariableDeclaratorSyntax declarator in field.Declaration.Variables)
+                    {
+                        Add(declarator.Identifier, 0, declarator.Initializer?.Value, isTest: false);
                     }
                     break;
             }
@@ -422,10 +435,26 @@ public sealed class CallGraph
                         keys.Add($"{type}/{creation.ArgumentList?.Arguments.Count ?? 0}");
                     }
                     break;
+
+                // A property or field read or write (`x.Total`, `this.Total = 0`) reaches it the same
+                // way a call reaches a method, just without an argument count to key on. Skipped when
+                // the access is itself the thing being invoked (`x.Foo()`): that call site is already
+                // counted above, under `Foo`'s real arity, and counting it again here under `Foo/0`
+                // would inflate the reference count for a single call site.
+                case MemberAccessExpressionSyntax member when !IsInvocationTarget(member):
+                    keys.Add($"{member.Name.Identifier.Text}/0");
+                    break;
+
+                case MemberBindingExpressionSyntax binding when !IsInvocationTarget(binding):
+                    keys.Add($"{binding.Name.Identifier.Text}/0");
+                    break;
             }
         }
         return keys.ToList();
     }
+
+    private static bool IsInvocationTarget(ExpressionSyntax expression) =>
+        expression.Parent is InvocationExpressionSyntax invocation && invocation.Expression == expression;
 
     private Dictionary<string, List<MethodNode>> CallersByKey()
     {

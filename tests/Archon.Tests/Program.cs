@@ -1214,6 +1214,7 @@ internal static class Program
                     public void FromIndexer() { }
                     public int Value { get { FromProperty(); return 1; } }
                     public int Auto { get; set; }
+                    public string Label = "unset";
                     public string this[int i] { get { FromIndexer(); return ""; } }
                     public void Outer() { void Inner() { FromLocal(); } Inner(); }
                 }
@@ -1225,7 +1226,14 @@ internal static class Program
             {
                 class Uses
                 {
-                    public void Build() { var s = new Service(); }
+                    public void Build()
+                    {
+                        var s = new Service();
+                        s.Auto = 1;
+                        s.Label = "set";
+                    }
+
+                    public int Read(Service s) => s.Auto;
                 }
             }
             """);
@@ -1245,10 +1253,10 @@ internal static class Program
         harness.Equal("treats object creation as reaching the constructor", 1, Count("Service"));
         harness.Check("indexes a local function in its own right",
             result.Methods.Any(m => m.MethodName == "Inner"));
-        harness.Check("does not index an auto-property, which holds no calls",
-            result.Methods.All(m => m.MethodName != "Auto"));
         harness.Check("indexes a property with a body exactly once",
             result.Methods.Count(m => m.MethodName == "Value") == 1);
+        harness.Equal("counts a write and a separate read of an auto-property as two callers", 2, Count("Auto"));
+        harness.Equal("counts a write to a field as a caller", 1, Count("Label"));
 
         Directory.Delete(root, recursive: true);
     }
