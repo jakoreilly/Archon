@@ -155,8 +155,8 @@ whole file.
 
 ## Installing without the marketplace
 
-The packaged `archon-analysis-0.4.3.vsix` is self-contained and can be shared directly. Install it
-with `code --install-extension archon-analysis-0.4.3.vsix`, or through
+The packaged `archon-analysis-0.4.4.vsix` is self-contained and can be shared directly. Install it
+with `code --install-extension archon-analysis-0.4.4.vsix`, or through
 **Extensions: Install from VSIX…** in the
 Command Palette. Neither Node.js nor the .NET SDK is needed to install it — only the .NET runtime
 to run it.
