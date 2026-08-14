@@ -264,6 +264,7 @@ accepted finding as a new one.
 | `AR0012` | warning | file | async | An `async void` method that is not an event handler |
 | `AR0013` | warning | file | async | An empty catch block |
 | `AR0014` | warning | file | async | `throw ex;` inside a catch block resets the stack trace |
+| `AR0015` | warning | file | async | `Thread.Sleep` blocks a thread inside an async method |
 | `AR0020` | information | file | performance | A sequence is counted to test whether it is empty |
 | `AR0021` | information | file | performance | String concatenation inside a loop |
 | `AR0022` | hint | file | performance | A sequence is copied then transformed again |
@@ -289,7 +290,11 @@ accepted finding as a new one.
 | `AR0072` | information | file | maintainability | An 'if' or ternary condition is a literal true/false, or compares an identifier to itself |
 | `AR0073` | hint | file | maintainability | Console.Write/WriteLine is called directly instead of through a logger |
 | `AR0074` | warning | file | maintainability | A well-known disposable local is never disposed on any path the rule can see |
+| `AR0075` | information | file | maintainability | A public, non-readonly field on a class exposes mutable state directly |
 | `AR0080` | warning | workspace | sql | A column named in inline SQL does not exist on the table it targets (single-table statements only) |
+| `AR0090` | information | file | globalization | `ToUpper()`/`ToLower()` casts case using the current culture instead of an invariant one |
+| `SQ0020` | warning | file | sql | A DELETE or UPDATE statement has no WHERE clause |
+| `SQ0021` | warning | file | sql | A comparison to NULL uses `=`/`<>` instead of `IS [NOT] NULL` |
 
 `Scope` is what a rule needs in order to decide, and therefore when it runs. A `file` rule runs on
 every save; a `project` rule also runs on save, over the project that owns the saved file; a
@@ -332,6 +337,12 @@ Rules are written to be silent rather than speculative where this matters:
   task-returning method not named for an asynchronous operation is not seen.
 - `AR0030` words every finding as a possibility, because a key can legitimately come from an
   environment variable or a secret store.
+- `AR0075` only checks `class` declarations; a `struct`'s public fields are left alone, since a value
+  type commonly exposes them by design.
+- `AR0090` only recognises a receiver declared (or literally) `string`, the same limitation `AR0021`
+  carries; a property chain or a `var`-declared receiver is not seen.
+- `SQ0020` exempts a `DELETE` whose target table is named `#...`, since clearing a whole staging
+  table before reloading it is a common, deliberate pattern.
 
 ## Adding a rule
 

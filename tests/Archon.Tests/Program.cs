@@ -67,6 +67,9 @@ internal static class Program
         SchemaAwareSqlRules(harness);
         TrendAnalyzerRules(harness);
         BaselineHistoryReadingRules(harness);
+        FieldVisibilityRules(harness);
+        GlobalizationRules(harness);
+        SqlSafetyRules(harness);
 
         return harness.Report();
     }
@@ -837,6 +840,22 @@ internal static class Program
             """);
         harness.Equal("attributes a nested catch's rethrow to the nested clause, not the outer one", 1,
             nestedCatchSameName.Analyse().Findings.CountOf(AsyncSafetyRule.RethrowLosesStackTrace));
+
+        var sleepInAsync = new TestWorkspace();
+        sleepInAsync.Add("a.cs",
+            "class C { async System.Threading.Tasks.Task M() { System.Threading.Thread.Sleep(1000); } }");
+        harness.Equal("flags Thread.Sleep inside an async method", 1,
+            sleepInAsync.Analyse().Findings.CountOf(AsyncSafetyRule.BlockingSleepInAsync));
+
+        var sleepInSyncMethod = new TestWorkspace();
+        sleepInSyncMethod.Add("a.cs", "class C { void M() { System.Threading.Thread.Sleep(1000); } }");
+        harness.Equal("does not flag Thread.Sleep in an ordinary synchronous method", 0,
+            sleepInSyncMethod.Analyse().Findings.CountOf(AsyncSafetyRule.BlockingSleepInAsync));
+
+        var unrelatedSleep = new TestWorkspace();
+        unrelatedSleep.Add("a.cs", "class C { async System.Threading.Tasks.Task M() { await Task.Delay(1); Timer.Sleep(1000); } }");
+        harness.Equal("leaves an unrelated type's Sleep method alone", 0,
+            unrelatedSleep.Analyse().Findings.CountOf(AsyncSafetyRule.BlockingSleepInAsync));
     }
 
     internal static void PerfHintRules(Harness harness)
@@ -1885,8 +1904,8 @@ internal static class Program
         var registry = new RuleRegistry();
         registry.Add(new BuiltInRulePack());
 
-        harness.Equal("every built-in condition is registered", 36, registry.Descriptors.Count);
-        harness.Equal("rules that report several conditions are counted once as rules", 14, registry.Rules.Count);
+        harness.Equal("every built-in condition is registered", 41, registry.Descriptors.Count);
+        harness.Equal("rules that report several conditions are counted once as rules", 17, registry.Rules.Count);
         harness.Check("a descriptor can be found by id", registry.Find(SelectStarRule.Id) is not null);
         harness.Check("an unknown id resolves to nothing", registry.Find("ZZ9999") is null);
         harness.Check("registering the same pack twice is refused rather than duplicated",
@@ -2979,5 +2998,146 @@ internal static class Program
         disabled.Add("a.cs", "class C { void M() { var sql = \"SELECT Bogus FROM dbo.Orders\"; } }");
         harness.Equal("honours 'AR0080': 'off'", 0,
             disabled.Analyse().Findings.CountOf(SchemaAwareSqlRule.UnknownColumn));
+    }
+
+    internal static void FieldVisibilityRules(Harness harness)
+    {
+        harness.Group("Field visibility");
+
+        var mutablePublic = new TestWorkspace();
+        mutablePublic.Add("a.cs", "class C { public int Total; }");
+        harness.Equal("flags a mutable public field", 1,
+            mutablePublic.Analyse().Findings.CountOf(FieldVisibilityRule.MutablePublicField));
+
+        var mutablePublicStatic = new TestWorkspace();
+        mutablePublicStatic.Add("a.cs", "class C { public static int Total; }");
+        harness.Equal("flags a mutable public static field", 1,
+            mutablePublicStatic.Analyse().Findings.CountOf(FieldVisibilityRule.MutablePublicField));
+
+        var readonlyField = new TestWorkspace();
+        readonlyField.Add("a.cs", "class C { public readonly int Total; }");
+        harness.Equal("does not flag a readonly field, which cannot be reassigned by a caller", 0,
+            readonlyField.Analyse().Findings.CountOf(FieldVisibilityRule.MutablePublicField));
+
+        var constField = new TestWorkspace();
+        constField.Add("a.cs", "class C { public const int Total = 1; }");
+        harness.Equal("does not flag a const field", 0,
+            constField.Analyse().Findings.CountOf(FieldVisibilityRule.MutablePublicField));
+
+        var privateField = new TestWorkspace();
+        privateField.Add("a.cs", "class C { private int _total; }");
+        harness.Equal("does not flag a private field", 0,
+            privateField.Analyse().Findings.CountOf(FieldVisibilityRule.MutablePublicField));
+
+        var structField = new TestWorkspace();
+        structField.Add("a.cs", "struct S { public int X; }");
+        harness.Equal("does not flag a public field on a struct, a common deliberate shape", 0,
+            structField.Analyse().Findings.CountOf(FieldVisibilityRule.MutablePublicField));
+
+        var multipleDeclarators = new TestWorkspace();
+        multipleDeclarators.Add("a.cs", "class C { public int X, Y; }");
+        harness.Equal("flags each declarator sharing one public field declaration", 2,
+            multipleDeclarators.Analyse().Findings.CountOf(FieldVisibilityRule.MutablePublicField));
+    }
+
+    internal static void GlobalizationRules(Harness harness)
+    {
+        harness.Group("Globalization");
+
+        var upperOnDeclaredString = new TestWorkspace();
+        upperOnDeclaredString.Add("a.cs", "class C { void M(string name) { var x = name.ToUpper(); } }");
+        harness.Equal("flags ToUpper() on a parameter declared string", 1,
+            upperOnDeclaredString.Analyse().Findings.CountOf(GlobalizationRule.CultureSensitiveCasing));
+
+        var lowerOnDeclaredString = new TestWorkspace();
+        lowerOnDeclaredString.Add("a.cs", "class C { void M() { string name = \"x\"; var y = name.ToLower(); } }");
+        harness.Equal("flags ToLower() on a local declared string", 1,
+            lowerOnDeclaredString.Analyse().Findings.CountOf(GlobalizationRule.CultureSensitiveCasing));
+
+        var onLiteral = new TestWorkspace();
+        onLiteral.Add("a.cs", "class C { void M() { var y = \"ABC\".ToLower(); } }");
+        harness.Equal("flags ToLower() called directly on a string literal", 1,
+            onLiteral.Analyse().Findings.CountOf(GlobalizationRule.CultureSensitiveCasing));
+
+        var invariantAlready = new TestWorkspace();
+        invariantAlready.Add("a.cs", "class C { void M(string name) { var x = name.ToUpperInvariant(); } }");
+        harness.Equal("does not flag the Invariant overload", 0,
+            invariantAlready.Analyse().Findings.CountOf(GlobalizationRule.CultureSensitiveCasing));
+
+        var withCultureArgument = new TestWorkspace();
+        withCultureArgument.Add("a.cs",
+            "class C { void M(string name) { var x = name.ToUpper(System.Globalization.CultureInfo.InvariantCulture); } }");
+        harness.Equal("does not flag a call that already specifies a culture", 0,
+            withCultureArgument.Analyse().Findings.CountOf(GlobalizationRule.CultureSensitiveCasing));
+
+        var unknownType = new TestWorkspace();
+        unknownType.Add("a.cs", "class C { void M(Widget w) { var x = w.ToUpper(); } } class Widget { public string ToUpper() => \"\"; }");
+        harness.Equal("does not flag a receiver not known to be a string", 0,
+            unknownType.Analyse().Findings.CountOf(GlobalizationRule.CultureSensitiveCasing));
+
+        var varDeclared = new TestWorkspace();
+        varDeclared.Add("a.cs", "class C { void M() { var name = GetName(); var x = name.ToUpper(); } string GetName() => \"x\"; }");
+        harness.Equal("does not flag a 'var'-declared receiver, whose type is not read from syntax", 0,
+            varDeclared.Analyse().Findings.CountOf(GlobalizationRule.CultureSensitiveCasing));
+    }
+
+    internal static void SqlSafetyRules(Harness harness)
+    {
+        harness.Group("SQL safety: WHERE-less writes and NULL equality");
+
+        var deleteNoWhere = new TestWorkspace();
+        deleteNoWhere.Add("a.sql", "DELETE FROM dbo.Orders;");
+        harness.Equal("flags a DELETE with no WHERE clause", 1,
+            deleteNoWhere.Analyse().Findings.CountOf(SqlSafetyRule.MissingWhereClause));
+
+        var deleteWithWhere = new TestWorkspace();
+        deleteWithWhere.Add("a.sql", "DELETE FROM dbo.Orders WHERE Id = 1;");
+        harness.Equal("does not flag a DELETE with a WHERE clause", 0,
+            deleteWithWhere.Analyse().Findings.CountOf(SqlSafetyRule.MissingWhereClause));
+
+        var deleteTempTable = new TestWorkspace();
+        deleteTempTable.Add("a.sql", "DELETE FROM #staging;");
+        harness.Equal("exempts a DELETE against a temp table, a common deliberate reload pattern", 0,
+            deleteTempTable.Analyse().Findings.CountOf(SqlSafetyRule.MissingWhereClause));
+
+        var updateNoWhere = new TestWorkspace();
+        updateNoWhere.Add("a.sql", "UPDATE dbo.Orders SET Status = 1;");
+        harness.Equal("flags an UPDATE with no WHERE clause", 1,
+            updateNoWhere.Analyse().Findings.CountOf(SqlSafetyRule.MissingWhereClause));
+
+        var updateWithWhere = new TestWorkspace();
+        updateWithWhere.Add("a.sql", "UPDATE dbo.Orders SET Status = 1 WHERE Id = 1;");
+        harness.Equal("does not flag an UPDATE with a WHERE clause", 0,
+            updateWithWhere.Analyse().Findings.CountOf(SqlSafetyRule.MissingWhereClause));
+
+        var equalsNull = new TestWorkspace();
+        equalsNull.Add("a.sql", "SELECT Id FROM dbo.Orders WHERE Status = NULL;");
+        harness.Equal("flags '= NULL'", 1,
+            equalsNull.Analyse().Findings.CountOf(SqlSafetyRule.NullComparisonWithEqualityOperator));
+
+        var notEqualsBracketNull = new TestWorkspace();
+        notEqualsBracketNull.Add("a.sql", "SELECT Id FROM dbo.Orders WHERE Status <> NULL;");
+        harness.Equal("flags '<> NULL'", 1,
+            notEqualsBracketNull.Analyse().Findings.CountOf(SqlSafetyRule.NullComparisonWithEqualityOperator));
+
+        var notEqualsExclamationNull = new TestWorkspace();
+        notEqualsExclamationNull.Add("a.sql", "SELECT Id FROM dbo.Orders WHERE Status != NULL;");
+        harness.Equal("flags '!= NULL'", 1,
+            notEqualsExclamationNull.Analyse().Findings.CountOf(SqlSafetyRule.NullComparisonWithEqualityOperator));
+
+        var isNull = new TestWorkspace();
+        isNull.Add("a.sql", "SELECT Id FROM dbo.Orders WHERE Status IS NULL;");
+        harness.Equal("does not flag 'IS NULL'", 0,
+            isNull.Analyse().Findings.CountOf(SqlSafetyRule.NullComparisonWithEqualityOperator));
+
+        var ordinaryEquality = new TestWorkspace();
+        ordinaryEquality.Add("a.sql", "SELECT Id FROM dbo.Orders WHERE Status = 1;");
+        harness.Equal("does not flag an ordinary equality comparison", 0,
+            ordinaryEquality.Analyse().Findings.CountOf(SqlSafetyRule.NullComparisonWithEqualityOperator));
+
+        var disabled = new TestWorkspace().WithSeverity(SqlSafetyRule.MissingWhereClause, "off");
+        disabled.Add("a.sql", "DELETE FROM dbo.Orders;");
+        harness.Equal("honours 'SQ0020': 'off'", 0,
+            disabled.Analyse().Findings.CountOf(SqlSafetyRule.MissingWhereClause));
     }
 }

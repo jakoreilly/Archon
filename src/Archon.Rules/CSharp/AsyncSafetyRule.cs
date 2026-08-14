@@ -34,6 +34,9 @@ public sealed class AsyncSafetyRule : IRule
     /// <summary>'throw ex;' inside a catch block, which resets the stack trace to the rethrow site.</summary>
     public const string RethrowLosesStackTrace = "AR0014";
 
+    /// <summary>Thread.Sleep called where an async method could await Task.Delay instead.</summary>
+    public const string BlockingSleepInAsync = "AR0015";
+
     private const string Category = "async";
 
     public IReadOnlyList<RuleDescriptor> Descriptors { get; } = new[]
@@ -67,7 +70,13 @@ public sealed class AsyncSafetyRule : IRule
             "Rethrow resets the stack trace",
             Category,
             Severity.Warning,
-            "'throw ex;' inside a catch block resets the stack trace to this line instead of preserving where the exception actually originated. Use a bare 'throw;' instead.")
+            "'throw ex;' inside a catch block resets the stack trace to this line instead of preserving where the exception actually originated. Use a bare 'throw;' instead."),
+        new RuleDescriptor(
+            BlockingSleepInAsync,
+            "Thread.Sleep in an async method",
+            Category,
+            Severity.Warning,
+            "An async method blocks its thread with Thread.Sleep instead of awaiting Task.Delay, holding the thread for no reason.")
     };
 
     public RuleScope Scope => RuleScope.File;
@@ -108,6 +117,10 @@ public sealed class AsyncSafetyRule : IRule
         if (context.IsEnabled(RethrowLosesStackTrace))
         {
             findings.AddRange(FindRethrowLosesStackTrace(parsed, root, file.Path));
+        }
+        if (context.IsEnabled(BlockingSleepInAsync))
+        {
+            findings.AddRange(FindBlockingSleep(parsed, file.Path));
         }
         return findings;
     }
@@ -173,6 +186,36 @@ public sealed class AsyncSafetyRule : IRule
                         "Blocking on a task with '.GetAwaiter().GetResult()' risks a deadlock and holds a thread; await it instead.");
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// Matches 'Thread.Sleep(...)' written inside an async method. The receiver is matched by its
+    /// last written name segment, the same text-based approach <see cref="LooksTaskLike"/> and the
+    /// ambient-environment sample rule use, so 'System.Threading.Thread.Sleep' is caught as well as
+    /// the bare form. Only the async-method case is reported: Thread.Sleep in ordinary synchronous
+    /// code is unremarkable and is not this rule's concern.
+    /// </summary>
+    private IEnumerable<Finding> FindBlockingSleep(ParsedCSharp parsed, string filePath)
+    {
+        foreach (InvocationExpressionSyntax invocation in parsed.Root.DescendantNodes().OfType<InvocationExpressionSyntax>())
+        {
+            if (invocation.Expression is not MemberAccessExpressionSyntax member || member.Name.Identifier.Text != "Sleep")
+            {
+                continue;
+            }
+            string receiver = member.Expression switch
+            {
+                IdentifierNameSyntax identifier => identifier.Identifier.Text,
+                MemberAccessExpressionSyntax qualified => qualified.Name.Identifier.Text,
+                _ => ""
+            };
+            if (receiver != "Thread" || !IsInsideAsyncMethod(invocation))
+            {
+                continue;
+            }
+            yield return Create(BlockingSleepInAsync, parsed, invocation.Span, filePath, "BlockingSleepInAsync",
+                "'Thread.Sleep' blocks this thread inside an async method; await 'Task.Delay' instead.");
         }
     }
 
