@@ -1,12 +1,26 @@
+<div align="center">
+
 # Archon
 
-Architecture, service-lifetime and T-SQL rules for C# and SQL codebases, plus three editor
-surfaces that answer questions a rule cannot. One analysis engine, three ways to reach it: an
-editor extension, a command line for continuous integration, and a long-lived host process that
-both of those drive.
+**Architecture, service-lifetime and T-SQL rules for C# and SQL — one engine, three ways in.**
 
-Analysis is syntax-only. No project is loaded, no build is required and no target framework has
-to be installed, so a codebase that does not currently compile is still fully analysable.
+Built-in rules for layering, DI lifetimes, async, performance, security and T-SQL, plus three
+editor surfaces that answer questions a rule cannot. Reach the same engine from a VS Code
+extension, a CLI built for CI, or a long-lived host process the other two drive.
+
+Analysis is **syntax-only**: no project is loaded, no build is required, no target framework has
+to be installed — so a codebase that does not currently compile is still fully analysable.
+
+[![.NET](https://img.shields.io/badge/.NET-10-5eb3ff?style=flat-square)](https://dotnet.microsoft.com)
+[![analysis](https://img.shields.io/badge/analysis-syntax--only-5eb3ff?style=flat-square)](#why-it-is-shaped-this-way)
+[![rules](https://img.shields.io/badge/rules-C%23%20%2B%20T--SQL%2C%20extensible-52d18b?style=flat-square)](#rules)
+[![license](https://img.shields.io/badge/license-MIT-93a1b3?style=flat-square)](LICENSE)
+
+<img src="docs/images/architecture.svg" alt="Archon architecture: a VS Code extension (which bundles its own archon-host), the archon CLI, and the archon-host process all reach one Archon.Core engine; the engine holds one warm parse per file, resolves configuration totally (bad entries reported, never fatal), and applies suppressions, the baseline, the call graph and the output writers itself; rules from the built-in Archon.Rules pack and from external rulePacks contain detection logic only" width="100%">
+
+</div>
+
+---
 
 ## Why it is shaped this way
 
@@ -133,6 +147,8 @@ the same loss-safe formatter `archon format` runs on the command line. **Archon:
 without opening them first.
 
 ## Beyond rules
+
+<img src="docs/images/beyond-rules.svg" alt="Three questions a rule can't answer: How far does this reach — callers, projects and tests above each method, matched on name and arity so counts are prefixed with a tilde; Why does this line exist — the last commit to touch the hovered line, with an issue link from a key template; What did this branch change — review mode dims what a file shares with the merge-base and reports how many findings fall inside the change" width="100%">
 
 Three questions come up constantly while changing code, and none of them has a yes-or-no answer, so
 none of them belongs to a rule. They are reported where the question is asked instead of in the
@@ -431,3 +447,9 @@ next request.
 The default implementation explains nothing and requires no configuration. Detection never
 consults it, so results stay reproducible and identical offline; an explainer only ever adds
 commentary to a finding produced without it.
+
+---
+
+<div align="center">
+<sub>An archon was the magistrate who saw that the rules were kept. This one only reads.</sub>
+</div>

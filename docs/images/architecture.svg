@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 470" width="900" height="470" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, sans-serif">
+  <defs>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#5eb3ff"/></marker>
+    <marker id="g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#52d18b"/></marker>
+  </defs>
+
+  <rect width="900" height="470" rx="14" fill="#0e1116"/>
+
+  <text x="24" y="34" fill="#93a1b3" font-size="11.5" font-weight="600" letter-spacing=".07em">ONE ENGINE · THREE WAYS TO REACH IT</text>
+
+  <!-- surfaces -->
+  <rect x="24" y="52" width="230" height="110" rx="12" fill="#161b23" stroke="#5eb3ff" stroke-opacity=".4"/>
+  <text x="40" y="74" fill="#e6edf3" font-size="12.5" font-weight="650">VS Code extension</text>
+  <text x="40" y="93" fill="#93a1b3" font-size="10">Problems panel · Archon Rules tree</text>
+  <text x="40" y="107" fill="#93a1b3" font-size="10">.sql formatter · the "beyond rules" hovers</text>
+  <text x="40" y="125" fill="#5b6878" font-size="9.5">bundles its own archon-host —</text>
+  <text x="40" y="138" fill="#5b6878" font-size="9.5">install needs only the .NET runtime</text>
+  <text x="40" y="154" fill="#5b6878" font-size="9.5">blame &amp; diff read straight from git, not the host</text>
+
+  <rect x="24" y="180" width="230" height="118" rx="12" fill="#161b23" stroke="#2a323f"/>
+  <text x="40" y="202" fill="#e6edf3" font-size="12.5" font-weight="650" font-family="ui-monospace, monospace">archon</text>
+  <text x="40" y="221" fill="#93a1b3" font-size="10">check · format · rules · baseline · explain</text>
+  <text x="40" y="235" fill="#93a1b3" font-size="10">hotspots · debt · trend  (all need git)</text>
+  <text x="40" y="253" fill="#93a1b3" font-size="10">--format console | json | sarif</text>
+  <text x="40" y="271" fill="#5b6878" font-size="9.5">exit 0 nothing hit --fail-on · 1 something did ·</text>
+  <text x="40" y="284" fill="#5b6878" font-size="9.5">2 could not run</text>
+
+  <rect x="24" y="316" width="230" height="118" rx="12" fill="#161b23" stroke="#2a323f"/>
+  <text x="40" y="338" fill="#e6edf3" font-size="12.5" font-weight="650" font-family="ui-monospace, monospace">archon-host</text>
+  <text x="40" y="357" fill="#93a1b3" font-size="10">long-lived · one JSON object per line,</text>
+  <text x="40" y="371" fill="#93a1b3" font-size="10">in and out — drivable by hand</text>
+  <text x="40" y="389" fill="#5b6878" font-size="9.5">initialize · analyzeFile · analyzeWorkspace ·</text>
+  <text x="40" y="402" fill="#5b6878" font-size="9.5">methodImpact · setSeverity · writeBaseline …</text>
+  <text x="40" y="418" fill="#5b6878" font-size="9.5">one request at a time, every request gets a reply</text>
+
+  <!-- engine -->
+  <rect x="300" y="60" width="332" height="320" rx="14" fill="#12171f" stroke="#2a323f"/>
+  <text x="316" y="82" fill="#93a1b3" font-size="11.5" font-weight="600" letter-spacing=".07em">Archon.Core — THE ENGINE</text>
+
+  <rect x="314" y="96" width="304" height="70" rx="10" fill="#161b23" stroke="#2a323f"/>
+  <text x="328" y="117" fill="#e6edf3" font-size="12" font-weight="650">source cache</text>
+  <text x="328" y="134" fill="#93a1b3" font-size="10">one parse per file, held warm between requests</text>
+  <text x="328" y="150" fill="#5b6878" font-size="9.5">syntax only — a save re-parses just the changed file</text>
+
+  <rect x="314" y="178" width="304" height="88" rx="10" fill="#161b23" stroke="#2a323f"/>
+  <text x="328" y="199" fill="#e6edf3" font-size="12" font-weight="650">applied by the engine, not the rule</text>
+  <text x="328" y="216" fill="#93a1b3" font-size="10">config resolution — total: a bad entry is reported,</text>
+  <text x="328" y="229" fill="#93a1b3" font-size="10">never fatal · suppression comments · baseline</text>
+  <text x="328" y="245" fill="#5b6878" font-size="9.5">baseline fingerprints exclude line numbers</text>
+  <text x="328" y="258" fill="#5b6878" font-size="9.5">a rule never reads settings or chooses a severity</text>
+
+  <rect x="314" y="278" width="304" height="86" rx="10" fill="#161b23" stroke="#2a323f"/>
+  <text x="328" y="299" fill="#e6edf3" font-size="12" font-weight="650">call graph · output writers</text>
+  <text x="328" y="316" fill="#93a1b3" font-size="10">workspace-wide graph, held between requests</text>
+  <text x="328" y="330" fill="#93a1b3" font-size="10">console · json · sarif — same findings, any shape</text>
+  <text x="328" y="346" fill="#5b6878" font-size="9.5">~ = name+arity match (no symbols) · ≥ = depth-capped</text>
+
+  <!-- rules -->
+  <rect x="672" y="120" width="204" height="120" rx="12" fill="#161b23" stroke="#52d18b" stroke-opacity=".4"/>
+  <text x="688" y="142" fill="#e6edf3" font-size="12.5" font-weight="650">rules</text>
+  <text x="688" y="161" fill="#93a1b3" font-size="10">Archon.Rules — the built-in pack</text>
+  <text x="688" y="177" fill="#93a1b3" font-size="10">AR#### (C#) · SQ#### (T-SQL)</text>
+  <text x="688" y="195" fill="#93a1b3" font-size="10">rulePacks — external assemblies,</text>
+  <text x="688" y="209" fill="#93a1b3" font-size="10">your own id prefix, no repo change</text>
+  <text x="688" y="227" fill="#5b6878" font-size="9.5">detection logic only · stateless · concurrent</text>
+
+  <!-- arrows -->
+  <path d="M254 107 L296 130" stroke="#5eb3ff" stroke-width="2" marker-end="url(#b)"/>
+  <path d="M254 236 L296 220" stroke="#5eb3ff" stroke-width="2" marker-end="url(#b)"/>
+  <path d="M254 360 L296 320" stroke="#5eb3ff" stroke-width="2" marker-end="url(#b)"/>
+  <path d="M672 180 L636 200" stroke="#52d18b" stroke-width="2" marker-end="url(#g)"/>
+
+  <!-- banners -->
+  <text x="24" y="452" fill="#93a1b3" font-size="10.5">Syntax-only: no build, no project load, no target framework. A codebase that doesn't currently compile is still fully analysable.</text>
+  <text x="24" y="466" fill="#5b6878" font-size="10">A rule id means the same thing in the editor, on the command line, and in an // archon-ignore comment.</text>
+</svg>
