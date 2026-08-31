@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 280" width="900" height="280" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, sans-serif">
+  <rect width="900" height="280" rx="14" fill="#0e1116"/>
+
+  <text x="24" y="34" fill="#93a1b3" font-size="11.5" font-weight="600" letter-spacing=".07em">THREE QUESTIONS A RULE CAN'T ANSWER — SHOWN WHERE THE QUESTION IS ASKED</text>
+
+  <rect x="24" y="48" width="277" height="164" rx="12" fill="#161b23" stroke="#2a323f"/>
+  <text x="42" y="72" fill="#e6edf3" font-size="12.5" font-weight="650">How far does this reach?</text>
+  <text x="42" y="94" fill="#93a1b3" font-size="10">above each method: callers, the projects</text>
+  <text x="42" y="108" fill="#93a1b3" font-size="10">they sit in, and tests that reach it</text>
+  <text x="42" y="128" fill="#5b6878" font-size="9.5">matched on name + argument count —</text>
+  <text x="42" y="141" fill="#5b6878" font-size="9.5">no symbols, so counts are prefixed ~</text>
+  <text x="42" y="154" fill="#5b6878" font-size="9.5">depth-capped test counts are prefixed ≥</text>
+  <text x="42" y="174" fill="#93a1b3" font-size="9.5">graph held warm: ~578 ms to build,</text>
+  <text x="42" y="187" fill="#93a1b3" font-size="9.5">~23 ms to query after</text>
+
+  <rect x="312" y="48" width="277" height="164" rx="12" fill="#161b23" stroke="#2a323f"/>
+  <text x="330" y="72" fill="#e6edf3" font-size="12.5" font-weight="650">Why does this line exist?</text>
+  <text x="330" y="94" fill="#93a1b3" font-size="10">hover: the commit that last changed it —</text>
+  <text x="330" y="108" fill="#93a1b3" font-size="10">author, age, message body, issue link</text>
+  <text x="330" y="128" fill="#5b6878" font-size="9.5">only the hovered line is blamed, so cost</text>
+  <text x="330" y="141" fill="#5b6878" font-size="9.5">doesn't grow with file size</text>
+  <text x="330" y="161" fill="#5b6878" font-size="9.5">archon.history.issueUrl is a {key} template —</text>
+  <text x="330" y="174" fill="#5b6878" font-size="9.5">any tracker, none named in the tool</text>
+
+  <rect x="600" y="48" width="276" height="164" rx="12" fill="#161b23" stroke="#2a323f"/>
+  <text x="618" y="72" fill="#e6edf3" font-size="12.5" font-weight="650">What did this branch change?</text>
+  <text x="618" y="94" fill="#93a1b3" font-size="10">review mode dims what a file shares with</text>
+  <text x="618" y="108" fill="#93a1b3" font-size="10">the base ref, summarising each changed run</text>
+  <text x="618" y="128" fill="#5b6878" font-size="9.5">base ref = merge-base with the upstream</text>
+  <text x="618" y="141" fill="#5b6878" font-size="9.5">branch, so it's this branch, not upstream drift</text>
+  <text x="618" y="161" fill="#5b6878" font-size="9.5">status bar: how many findings fall inside</text>
+  <text x="618" y="174" fill="#5b6878" font-size="9.5">the change — needs diff + findings together</text>
+
+  <text x="24" y="242" fill="#93a1b3" font-size="10.5">None of these has a yes-or-no answer, so none is a rule. They report in the editor gutter and hovers, never the Problems panel,</text>
+  <text x="24" y="258" fill="#93a1b3" font-size="10.5">and the one that needs the diff and the findings at once is the thing three separate extensions could not have done.</text>
+</svg>
