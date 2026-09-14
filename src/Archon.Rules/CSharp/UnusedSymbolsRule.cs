@@ -12,8 +12,10 @@ namespace Archon.Rules.CSharp;
 /// Flags a method parameter or a local variable that is declared and never read again.
 ///
 /// A parameter is exempt whenever its signature might not be the method's own to change: an
-/// override, an explicit interface implementation, or the two-parameter (object, EventArgs)-shaped
-/// event handler AsyncSafetyRule already recognises for the same reason. A name starting with '_' is
+/// override, an explicit interface implementation, a public method on a type that lists an
+/// interface among its bases (an implicit implementation cannot be told from a neighbour without
+/// symbols, so both are left alone), or the two-parameter (object, EventArgs)-shaped event handler
+/// AsyncSafetyRule already recognises for the same reason. A name starting with '_' is
 /// read as a deliberate "intentionally unused" marker, the convention .NET's own discard uses. A
 /// local is exempt when declared by 'using' or 'const', since those forms exist for their side
 /// effect or scope even when the bound name itself goes unread; this rule does not attempt to track
@@ -111,6 +113,10 @@ public sealed class UnusedSymbolsRule : IRule
         {
             return true;
         }
+        if (MayImplementInterface(method))
+        {
+            return true;
+        }
         SeparatedSyntaxList<ParameterSyntax> parameters = method.ParameterList.Parameters;
         if (parameters.Count == 2)
         {
@@ -122,6 +128,35 @@ public sealed class UnusedSymbolsRule : IRule
         }
         return false;
     }
+
+    /// <summary>
+    /// Whether the method could be an implicit interface implementation, whose parameter list the
+    /// interface dictates. Without symbols the interface's members cannot be read, so the test is
+    /// the one syntax offers: a public instance method on a type whose base list names something
+    /// spelled like an interface ('I' followed by a capital, the .NET convention), or a member with
+    /// a body declared on an interface itself. A public method on such a type that is not in fact
+    /// an interface member goes unreported; the rule's documented lean is to stay silent when the
+    /// signature might not be the author's to change.
+    /// </summary>
+    private static bool MayImplementInterface(MethodDeclarationSyntax method)
+    {
+        if (method.Parent is InterfaceDeclarationSyntax)
+        {
+            return true;
+        }
+        if (method.Parent is not TypeDeclarationSyntax { BaseList: { } baseList })
+        {
+            return false;
+        }
+        if (!method.Modifiers.Any(SyntaxKind.PublicKeyword) || method.Modifiers.Any(SyntaxKind.StaticKeyword))
+        {
+            return false;
+        }
+        return baseList.Types.Any(t => LooksLikeInterface(DeclaredTypes.SimpleName(t.Type.ToString())));
+    }
+
+    private static bool LooksLikeInterface(string name) =>
+        name.Length >= 2 && name[0] == 'I' && char.IsUpper(name[1]);
 
     private IEnumerable<Finding> FindUnusedLocals(ParsedCSharp parsed, string filePath)
     {

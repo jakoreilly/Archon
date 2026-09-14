@@ -15,13 +15,9 @@ internal static class ExpectedCorpusFindings
             // would be read by the caller in real code, but nothing after it exists in this block.
             ["PUB-DATA-06-0"] = new Dictionary<string, int> { ["AR0071"] = 1 },
 
-            // 'cancellationToken' implements IHostedService.StopAsync, but the parameter is
-            // unused because the service has nothing to do on shutdown. UnusedSymbolsRule only
-            // exempts an override, an explicit interface implementation or an event-handler
-            // shape (UnusedSymbolsRule.cs:104) — an implicit interface implementation like this
-            // one is not syntactically distinguishable from an ordinary method, by the rule's own
-            // documented design ("cannot always be told from syntax alone").
-            ["PUB-JOB-01-0"] = new Dictionary<string, int> { ["AR0070"] = 1 },
+            // PUB-JOB-01's unused 'cancellationToken' on IHostedService.StopAsync is no longer
+            // expected: AR0070 exempts a public instance method on a type whose base list names
+            // an 'I...' type, so an implicit implementation is left alone as an explicit one is.
 
             // Moq's fluent '.ReturnsAsync(...)' is a same-line continuation of '.Setup(...)' and
             // returns the mock's setup object, not a task — but AsyncSafetyRule decides
@@ -33,9 +29,9 @@ internal static class ExpectedCorpusFindings
             // 'Execute' implements Quartz's IJob.Execute(IJobExecutionContext) — a fixed interface
             // signature — but AsyncContractRule's SVC0020 only exempts an override, an explicit
             // interface implementation named 'I...', an HTTP/test attribute or an event-handler
-            // shape; an implicit implementation of a third-party interface is the same "cannot
-            // always be told from syntax alone" limitation AR0070 already accepts (see PUB-JOB-01
-            // in Phase 2).
+            // shape; an implicit implementation of a third-party interface is a "cannot always be
+            // told from syntax alone" limitation of that sample pack (the built-in AR0070 now
+            // reads the base list for it, which the sample rule could adopt in the same way).
             ["PUB-JOB-03-0"] = new Dictionary<string, int> { ["SVC0020"] = 1 },
 
             // 'Consume' implements MassTransit's IConsumer<T>.Consume(ConsumeContext<T>) — the

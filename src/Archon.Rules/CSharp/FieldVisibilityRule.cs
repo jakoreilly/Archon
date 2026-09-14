@@ -16,8 +16,9 @@ namespace Archon.Rules.CSharp;
 /// commonly exposes public fields by design (a POD/interop shape, a small coordinate-like type), and
 /// telling that legitimate case apart from a mistake needs judgement this rule cannot make from
 /// syntax alone. <c>const</c> and <c>readonly</c> fields are exempt since neither can be reassigned
-/// by a caller after construction, so there is nothing to encapsulate against. An <c>event</c> field
-/// is a different syntax node entirely and is never a candidate.
+/// by a caller after construction, so there is nothing to encapsulate against, and so is a class
+/// nested privately inside another, whose only callers are the enclosing type's own code. An
+/// <c>event</c> field is a different syntax node entirely and is never a candidate.
 /// </summary>
 public sealed class FieldVisibilityRule : IRule
 {
@@ -60,6 +61,10 @@ public sealed class FieldVisibilityRule : IRule
     {
         foreach (ClassDeclarationSyntax classDeclaration in parsed.Root.DescendantNodes().OfType<ClassDeclarationSyntax>())
         {
+            if (IsPrivateToEnclosingType(classDeclaration))
+            {
+                continue;
+            }
             foreach (FieldDeclarationSyntax field in classDeclaration.Members.OfType<FieldDeclarationSyntax>())
             {
                 if (!field.Modifiers.Any(SyntaxKind.PublicKeyword) ||
@@ -75,6 +80,29 @@ public sealed class FieldVisibilityRule : IRule
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Whether the class, or any type it is nested in, is private to its enclosing type. A nested
+    /// type with no accessibility modifier is private, which is the common way to write one. A
+    /// public field on such a class is reachable only from the enclosing type's own code, which is
+    /// the very code that would otherwise own the property; there is nothing to encapsulate against.
+    /// </summary>
+    private static bool IsPrivateToEnclosingType(ClassDeclarationSyntax classDeclaration)
+    {
+        TypeDeclarationSyntax? type = classDeclaration;
+        while (type is not null && type.Parent is TypeDeclarationSyntax enclosing)
+        {
+            bool widened = type.Modifiers.Any(m =>
+                m.IsKind(SyntaxKind.PublicKeyword) || m.IsKind(SyntaxKind.InternalKeyword) || m.IsKind(SyntaxKind.ProtectedKeyword));
+            if (!widened)
+            {
+                // Either 'private' is written, or nothing is, and nothing means private for a nested type.
+                return true;
+            }
+            type = enclosing;
+        }
+        return false;
     }
 
     private static Finding Create(ParsedCSharp parsed, TextSpan span, string filePath, string message)
