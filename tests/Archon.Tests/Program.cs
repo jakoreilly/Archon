@@ -23,60 +23,92 @@ namespace Archon.Tests;
 /// </summary>
 internal static class Program
 {
+    /// <summary>
+    /// Every group, in the order the standalone run executes them. The xUnit wrapper reads this
+    /// same list, so a group is registered in one place; <see cref="UnlistedGroups"/> is what
+    /// catches a group that was written and never added here.
+    /// </summary>
+    internal static IReadOnlyList<(string Name, Action<Harness> Run)> Groups { get; } = new (string, Action<Harness>)[]
+    {
+        (nameof(SqlWildcardRules), SqlWildcardRules),
+        (nameof(SqlConventionRules), SqlConventionRules),
+        (nameof(SqlFormatterRules), SqlFormatterRules),
+        (nameof(SecurityHotspotRules), SecurityHotspotRules),
+        (nameof(ComplexityRules), ComplexityRules),
+        (nameof(UnusedSymbolsRules), UnusedSymbolsRules),
+        (nameof(LogicHygieneRules), LogicHygieneRules),
+        (nameof(DisposalRules), DisposalRules),
+        (nameof(LayerRules), LayerRules),
+        (nameof(LifetimeRules), LifetimeRules),
+        (nameof(AsyncSafetyRules), AsyncSafetyRules),
+        (nameof(PerfHintRules), PerfHintRules),
+        (nameof(ConfigKeyRules), ConfigKeyRules),
+        (nameof(ProjectCycleRules), ProjectCycleRules),
+        (nameof(CallGraphChecks), CallGraphChecks),
+        (nameof(CallGraphMemberChecks), CallGraphMemberChecks),
+        (nameof(CallGraphTraceChecks), CallGraphTraceChecks),
+        (nameof(SuppressionRules), SuppressionRules),
+        (nameof(BaselineRules), BaselineRules),
+        (nameof(BaselineHygieneRules), BaselineHygieneRules),
+        (nameof(EngineWorkItemRules), EngineWorkItemRules),
+        (nameof(BaselineStabilityRules), BaselineStabilityRules),
+        (nameof(SourceCacheRules), SourceCacheRules),
+        (nameof(ProjectAttributionRules), ProjectAttributionRules),
+        (nameof(ConfigurationRules), ConfigurationRules),
+        (nameof(ConfigOverrideRules), ConfigOverrideRules),
+        (nameof(ScopeRules), ScopeRules),
+        (nameof(RegistryRules), RegistryRules),
+        (nameof(GlobRules), GlobRules),
+        (nameof(SnippetExtractionRules), SnippetExtractionRules),
+        (nameof(SnippetCorpusRules), SnippetCorpusRules),
+        (nameof(ServiceConventionRules), ServiceConventionRules),
+        (nameof(ConventionPackTier2Rules), ConventionPackTier2Rules),
+        (nameof(SnippetCatalogRules), SnippetCatalogRules),
+        (nameof(ConfigValidationRules), ConfigValidationRules),
+        (nameof(ConfigSchemaRules), ConfigSchemaRules),
+        (nameof(HotspotRankingRules), HotspotRankingRules),
+        (nameof(GitHistoryRules), GitHistoryRules),
+        (nameof(DebtRankingRules), DebtRankingRules),
+        (nameof(ChangeSetRules), ChangeSetRules),
+        (nameof(FixRules), FixRules),
+        (nameof(SarifReportRules), SarifReportRules),
+        (nameof(GitHistoryChurnSinceRules), GitHistoryChurnSinceRules),
+        (nameof(SchemaCatalogRules), SchemaCatalogRules),
+        (nameof(SchemaAwareSqlRules), SchemaAwareSqlRules),
+        (nameof(TrendAnalyzerRules), TrendAnalyzerRules),
+        (nameof(BaselineHistoryReadingRules), BaselineHistoryReadingRules),
+        (nameof(FieldVisibilityRules), FieldVisibilityRules),
+        (nameof(GlobalizationRules), GlobalizationRules),
+        (nameof(SqlSafetyRules), SqlSafetyRules)
+    };
+
+    /// <summary>
+    /// Group methods — static, void, taking one <see cref="Harness"/> — that <see cref="Groups"/>
+    /// does not name. Empty when every group written is a group run.
+    /// </summary>
+    internal static IReadOnlyList<string> UnlistedGroups()
+    {
+        var listed = Groups.Select(g => g.Name).ToHashSet(StringComparer.Ordinal);
+        return typeof(Program)
+            .GetMethods(System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public)
+            .Where(m => m.ReturnType == typeof(void) && m.GetParameters() is [{ ParameterType: { } p }] && p == typeof(Harness))
+            .Select(m => m.Name)
+            .Where(name => !listed.Contains(name))
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToList();
+    }
+
     private static int Main()
     {
         var harness = new Harness();
 
-        SqlWildcardRules(harness);
-        SqlConventionRules(harness);
-        SqlFormatterRules(harness);
-        SecurityHotspotRules(harness);
-        ComplexityRules(harness);
-        UnusedSymbolsRules(harness);
-        LogicHygieneRules(harness);
-        DisposalRules(harness);
-        LayerRules(harness);
-        LifetimeRules(harness);
-        AsyncSafetyRules(harness);
-        PerfHintRules(harness);
-        ConfigKeyRules(harness);
-        ProjectCycleRules(harness);
-        CallGraphChecks(harness);
-        CallGraphMemberChecks(harness);
-        CallGraphTraceChecks(harness);
-        SuppressionRules(harness);
-        BaselineRules(harness);
-        BaselineHygieneRules(harness);
-        EngineWorkItemRules(harness);
-        BaselineStabilityRules(harness);
-        SourceCacheRules(harness);
-        ProjectAttributionRules(harness);
-        ConfigurationRules(harness);
-        ConfigOverrideRules(harness);
-        ScopeRules(harness);
-        RegistryRules(harness);
-        GlobRules(harness);
-        SnippetExtractionRules(harness);
-        SnippetCorpusRules(harness);
-        ServiceConventionRules(harness);
-        ConventionPackTier2Rules(harness);
-        SnippetCatalogRules(harness);
-        ConfigValidationRules(harness);
-        ConfigSchemaRules(harness);
-        HotspotRankingRules(harness);
-        GitHistoryRules(harness);
-        DebtRankingRules(harness);
-        ChangeSetRules(harness);
-        FixRules(harness);
-        SarifReportRules(harness);
-        GitHistoryChurnSinceRules(harness);
-        SchemaCatalogRules(harness);
-        SchemaAwareSqlRules(harness);
-        TrendAnalyzerRules(harness);
-        BaselineHistoryReadingRules(harness);
-        FieldVisibilityRules(harness);
-        GlobalizationRules(harness);
-        SqlSafetyRules(harness);
+        foreach ((string _, Action<Harness> run) in Groups)
+        {
+            run(harness);
+        }
+
+        harness.Group("Test suite");
+        harness.Equal("every group written is in the list that runs", "", string.Join(", ", UnlistedGroups()));
 
         return harness.Report();
     }

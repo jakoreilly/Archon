@@ -58,7 +58,9 @@ dotnet tests/Archon.Tests/bin/Debug/net10.0/archon-tests.dll
 dotnet src/Archon.Cli/bin/Debug/net10.0/archon.dll check tests/fixtures/sample
 ```
 
-The extension's own parsers are tested separately, without VS Code, by `npm test` in
+The same groups run one per test under `dotnet test`, for an IDE's test explorer or a runner
+that wants TRX output; the two entry points read one list, and a group written but not listed
+fails both. The extension's own parsers are tested separately, without VS Code, by `npm test` in
 `vscode/archon-vscode`.
 
 `archon init` writes a starter `.archon.json` at the root of the repository you want to analyse,
