@@ -89,10 +89,10 @@ public sealed class AnalysisEngine
         return Run(projectWorkspace, config, baseline, new[] { RuleScope.File, RuleScope.Project }, target, cancellationToken);
     }
 
-    /// <summary>Analyses an entire workspace with every scope that has its inputs available.</summary>
+    /// <summary>Analyses an entire workspace with every scope.</summary>
     public AnalysisResult AnalyseWorkspace(WorkspaceModel workspace, ArchonConfig config, Baseline baseline, CancellationToken cancellationToken = default)
     {
-        var scopes = new[] { RuleScope.File, RuleScope.Project, RuleScope.Workspace, RuleScope.Database };
+        var scopes = new[] { RuleScope.File, RuleScope.Project, RuleScope.Workspace };
         return Run(workspace, config, baseline, scopes, null, cancellationToken);
     }
 
@@ -204,14 +204,6 @@ public sealed class AnalysisEngine
             }
             if (enabled.Count == 0)
             {
-                continue;
-            }
-            if (rule.Scope == RuleScope.Database)
-            {
-                foreach (RuleDescriptor descriptor in enabled)
-                {
-                    skipped.Add(new SkippedRule(descriptor.Id, "no database connection configured"));
-                }
                 continue;
             }
             active.Add(rule);

@@ -537,13 +537,6 @@ Requests are handled one at a time in arrival order and every request gets a rep
 does not want to queue work it no longer needs waits for the previous reply before sending the
 next request.
 
-## Explanations
-
-`IFindingExplainer` is an optional seam for prose about a finding that has already been detected.
-The default implementation explains nothing and requires no configuration. Detection never
-consults it, so results stay reproducible and identical offline; an explainer only ever adds
-commentary to a finding produced without it.
-
 ---
 
 <div align="center">

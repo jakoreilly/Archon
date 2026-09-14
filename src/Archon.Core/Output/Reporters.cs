@@ -180,7 +180,6 @@ public static class Reporter
         endLine = finding.Span.EndLine,
         endColumn = finding.Span.EndColumn,
         fingerprint = finding.Fingerprint,
-        explanation = finding.Explanation,
         fix = finding.Fix is null ? null : new
         {
             title = finding.Fix.Title,

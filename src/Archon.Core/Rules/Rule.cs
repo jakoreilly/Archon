@@ -18,10 +18,7 @@ public enum RuleScope
     Project = 1,
 
     /// <summary>Needs every file in the workspace.</summary>
-    Workspace = 2,
-
-    /// <summary>Needs a live database connection and is skipped when none is configured.</summary>
-    Database = 3
+    Workspace = 2
 }
 
 /// <summary>Source languages a rule can consume.</summary>

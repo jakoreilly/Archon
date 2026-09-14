@@ -57,9 +57,6 @@ public sealed record Finding
     /// <summary>Optional machine-readable sub-classification, surfaced in JSON and SARIF only.</summary>
     public string? Kind { get; init; }
 
-    /// <summary>Populated on demand by an explainer; never produced by a rule itself.</summary>
-    public string? Explanation { get; init; }
-
     /// <summary>A rewrite the rule is certain resolves this finding, or <c>null</c> when it offers none.</summary>
     public FindingFix? Fix { get; init; }
 
