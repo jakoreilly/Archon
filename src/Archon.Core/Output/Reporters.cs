@@ -195,54 +195,52 @@ public static class Reporter
         }
     };
 
+    /// <summary>Where the repository and its rule reference live, for a SARIF viewer's links.</summary>
+    private const string ProjectUri = "https://github.com/jakoreilly/Archon";
+
+    /// <summary>The pack whose rules the README documents; rules from other packs get no help link.</summary>
+    private const string BuiltInPack = "archon.builtin";
+
+    /// <summary>
+    /// The engine's version as the assembly carries it, for a log's <c>driver.version</c>. Read
+    /// rather than written so it cannot disagree with what <c>archon --version</c> prints.
+    /// </summary>
+    private static string EngineVersion =>
+        typeof(Reporter).Assembly.GetName().Version is { } version
+            ? $"{version.Major}.{version.Minor}.{version.Build}"
+            : "unknown";
+
+    /// <summary>
+    /// SARIF 2.1.0. Baselined findings are emitted as well as reportable ones, each marked with
+    /// its <c>baselineState</c> and, for a baselined one, an external suppression naming the
+    /// baseline file: a viewer that tracks alerts across uploads then sees accepted debt as
+    /// accepted rather than as absent one run and new the next, and a gate that reads the log
+    /// can still tell the two apart.
+    /// </summary>
     private static string RenderSarif(AnalysisResult result, RuleRegistry registry, string workspaceRoot)
     {
-        var reportedRuleIds = result.Findings.Select(f => f.RuleId).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var reportedRuleIds = result.Findings.Concat(result.BaselinedFindings)
+            .Select(f => f.RuleId)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(id => id, StringComparer.Ordinal)
+            .ToList();
+        var ruleIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
         var rules = new JsonArray();
         foreach (string ruleId in reportedRuleIds)
         {
-            RegisteredRule? registered = registry.Find(ruleId);
-            rules.Add(new JsonObject
-            {
-                ["id"] = ruleId,
-                ["name"] = registered?.Descriptor.Title ?? ruleId,
-                ["shortDescription"] = new JsonObject { ["text"] = registered?.Descriptor.Description ?? ruleId },
-                ["properties"] = new JsonObject
-                {
-                    ["category"] = registered?.Descriptor.Category ?? "general",
-                    ["scope"] = registered?.Rule.Scope.ToString() ?? "File"
-                }
-            });
+            ruleIndex[ruleId] = rules.Count;
+            rules.Add(SarifRule(ruleId, registry.Find(ruleId)));
         }
 
         var results = new JsonArray();
         foreach (Finding finding in result.Findings)
         {
-            string uri = Fingerprint.ToRelative(finding.FilePath, workspaceRoot).Replace('\\', '/');
-            var entry = new JsonObject
-            {
-                ["ruleId"] = finding.RuleId,
-                ["level"] = SarifLevel(finding.Severity),
-                ["message"] = new JsonObject { ["text"] = finding.Message },
-                ["partialFingerprints"] = new JsonObject { ["archonFingerprint/v1"] = finding.Fingerprint },
-                ["locations"] = new JsonArray
-                {
-                    new JsonObject
-                    {
-                        ["physicalLocation"] = new JsonObject
-                        {
-                            ["artifactLocation"] = new JsonObject { ["uri"] = uri },
-                            ["region"] = SarifRegion(finding.Span)
-                        }
-                    }
-                }
-            };
-            if (finding.Fix is not null)
-            {
-                entry["fixes"] = new JsonArray { SarifFix(finding.Fix, uri) };
-            }
-            results.Add(entry);
+            results.Add(SarifResult(finding, ruleIndex[finding.RuleId], workspaceRoot, baselined: false));
+        }
+        foreach (Finding finding in result.BaselinedFindings)
+        {
+            results.Add(SarifResult(finding, ruleIndex[finding.RuleId], workspaceRoot, baselined: true));
         }
 
         var log = new JsonObject
@@ -258,7 +256,8 @@ public static class Reporter
                         ["driver"] = new JsonObject
                         {
                             ["name"] = "Archon",
-                            ["informationUri"] = "https://github.com/archon-tools/archon",
+                            ["version"] = EngineVersion,
+                            ["informationUri"] = ProjectUri,
                             ["rules"] = rules
                         }
                     },
@@ -267,6 +266,73 @@ public static class Reporter
             }
         };
         return log.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+    }
+
+    private static JsonObject SarifRule(string ruleId, RegisteredRule? registered)
+    {
+        var rule = new JsonObject
+        {
+            ["id"] = ruleId,
+            ["name"] = registered?.Descriptor.Title ?? ruleId,
+            ["shortDescription"] = new JsonObject { ["text"] = registered?.Descriptor.Description ?? ruleId },
+            ["properties"] = new JsonObject
+            {
+                ["category"] = registered?.Descriptor.Category ?? "general",
+                ["scope"] = registered?.Rule.Scope.ToString() ?? "File"
+            }
+        };
+        if (registered is null)
+        {
+            return rule;
+        }
+        rule["defaultConfiguration"] = new JsonObject { ["level"] = SarifLevel(registered.Descriptor.DefaultSeverity) };
+        if (registered.PackName == BuiltInPack)
+        {
+            rule["helpUri"] = $"{ProjectUri}#rules";
+        }
+        return rule;
+    }
+
+    private static JsonObject SarifResult(Finding finding, int ruleIndex, string workspaceRoot, bool baselined)
+    {
+        string uri = Fingerprint.ToRelative(finding.FilePath, workspaceRoot).Replace('\\', '/');
+        var entry = new JsonObject
+        {
+            ["ruleId"] = finding.RuleId,
+            ["ruleIndex"] = ruleIndex,
+            ["level"] = SarifLevel(finding.Severity),
+            ["message"] = new JsonObject { ["text"] = finding.Message },
+            ["baselineState"] = baselined ? "unchanged" : "new",
+            ["partialFingerprints"] = new JsonObject { ["archonFingerprint/v1"] = finding.Fingerprint },
+            ["locations"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["physicalLocation"] = new JsonObject
+                    {
+                        ["artifactLocation"] = new JsonObject { ["uri"] = uri },
+                        ["region"] = SarifRegion(finding.Span)
+                    }
+                }
+            }
+        };
+        if (baselined)
+        {
+            entry["suppressions"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["kind"] = "external",
+                    ["status"] = "accepted",
+                    ["justification"] = "Accepted in the Archon baseline file."
+                }
+            };
+        }
+        if (finding.Fix is not null)
+        {
+            entry["fixes"] = new JsonArray { SarifFix(finding.Fix, uri) };
+        }
+        return entry;
     }
 
     private static JsonObject SarifRegion(SourceSpan span) => new()
@@ -308,6 +374,8 @@ public static class Reporter
         Severity.Error => "error",
         Severity.Warning => "warning",
         Severity.Information => "note",
+        // A rule whose default is off still has a level to declare: SARIF's own word for it.
+        Severity.Off => "none",
         _ => "note"
     };
 

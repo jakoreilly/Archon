@@ -3,6 +3,7 @@ using Archon.Core.Engine;
 using Archon.Core.Explanations;
 using Archon.Core.Findings;
 using Archon.Core.Insights;
+using Archon.Core.Output;
 using Archon.Core.Rules;
 using Archon.Core.Sources;
 using Archon.Core.Sql;
@@ -67,6 +68,7 @@ internal static class Program
         DebtRankingRules(harness);
         ChangeSetRules(harness);
         FixRules(harness);
+        SarifReportRules(harness);
         GitHistoryChurnSinceRules(harness);
         SchemaCatalogRules(harness);
         SchemaAwareSqlRules(harness);
@@ -3130,6 +3132,45 @@ internal static class Program
         FixApplier.Outcome outOfRange = FixApplier.Apply("short", new[] { FindingFix.Replace("bad", new SourceSpan(4, 0, 4, 1), "x") });
         harness.Equal("an edit outside the text is ignored", 0, outOfRange.Applied);
         harness.Equal("and leaves the text alone", "short", outOfRange.Text);
+    }
+
+    /// <summary>
+    /// The SARIF log is the contract a code-scanning consumer reads, so its shape is asserted as
+    /// text-derived JSON rather than left to whatever the writer happens to emit.
+    /// </summary>
+    internal static void SarifReportRules(Harness harness)
+    {
+        harness.Group("SARIF report");
+
+        var workspace = new TestWorkspace();
+        workspace.Add("a.sql", "SELECT * FROM dbo.First;\nSELECT * FROM dbo.Second;");
+        AnalysisResult all = workspace.Analyse();
+        var baseline = new Baseline(new[] { new BaselineEntry { Fingerprint = all.Findings[0].Fingerprint } });
+        AnalysisResult result = workspace.Analyse(baseline);
+        harness.Equal("one finding is reportable and one baselined", (1, 1), (result.Findings.Count, result.BaselinedFindings.Count));
+
+        var registry = new RuleRegistry();
+        registry.Add(new BuiltInRulePack());
+        string text = Reporter.Render(result, registry, workspace.Config.WorkspaceRoot, ReportFormat.Sarif);
+        using var document = System.Text.Json.JsonDocument.Parse(text);
+        System.Text.Json.JsonElement run = document.RootElement.GetProperty("runs")[0];
+        System.Text.Json.JsonElement driver = run.GetProperty("tool").GetProperty("driver");
+
+        harness.Check("the driver carries the engine's version", System.Text.RegularExpressions.Regex.IsMatch(driver.GetProperty("version").GetString()!, @"^\d+\.\d+\.\d+$"));
+        harness.Equal("and points at this repository", "https://github.com/jakoreilly/Archon", driver.GetProperty("informationUri").GetString());
+
+        System.Text.Json.JsonElement rule = driver.GetProperty("rules")[0];
+        harness.Equal("a built-in rule links to the rule reference", "https://github.com/jakoreilly/Archon#rules", rule.GetProperty("helpUri").GetString());
+        harness.Equal("and declares its default level", "warning", rule.GetProperty("defaultConfiguration").GetProperty("level").GetString());
+
+        List<System.Text.Json.JsonElement> results = run.GetProperty("results").EnumerateArray().ToList();
+        harness.Equal("both findings are in the log", 2, results.Count);
+        harness.Equal("every result indexes its rule", true, results.All(r => r.GetProperty("ruleIndex").GetInt32() == 0));
+        harness.Equal("the reportable finding is new against the baseline", "new", results[0].GetProperty("baselineState").GetString());
+        harness.Equal("and carries no suppression", false, results[0].TryGetProperty("suppressions", out _));
+        harness.Equal("the baselined finding is unchanged against the baseline", "unchanged", results[1].GetProperty("baselineState").GetString());
+        harness.Equal("and is suppressed externally", "external", results[1].GetProperty("suppressions")[0].GetProperty("kind").GetString());
+        harness.Equal("with the suppression accepted", "accepted", results[1].GetProperty("suppressions")[0].GetProperty("status").GetString());
     }
 
     internal static void ChangeSetRules(Harness harness)

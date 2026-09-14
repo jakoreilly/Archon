@@ -125,6 +125,12 @@ when the command could not run. A pipeline step is usually:
 archon check . --format sarif --output archon.sarif --fail-on error
 ```
 
+The SARIF log includes baselined findings as well as new ones, each marked with its
+`baselineState` (`new` or `unchanged`) and, for a baselined one, an external suppression naming the
+baseline. A code-scanning consumer that tracks alerts across uploads then sees accepted debt as
+accepted rather than as fixed one run and new the next; the `--fail-on` decision still counts only
+the new ones. Each built-in rule links back to the table under [Rules](#rules).
+
 ### Checking only what a branch changed
 
 ```
