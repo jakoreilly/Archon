@@ -214,9 +214,51 @@ public sealed class AsyncSafetyRule : IRule
             {
                 continue;
             }
-            yield return Create(BlockingSleepInAsync, parsed, invocation.Span, filePath, "BlockingSleepInAsync",
+            Finding finding = Create(BlockingSleepInAsync, parsed, invocation.Span, filePath, "BlockingSleepInAsync",
                 "'Thread.Sleep' blocks this thread inside an async method; await 'Task.Delay' instead.");
+            if (CanAwaitInPlace(invocation))
+            {
+                // Task.Delay accepts the same argument shapes as Thread.Sleep (a millisecond count
+                // or a TimeSpan), so the argument list is carried over as written. The receiver is
+                // qualified only as far as the original was, so a bare 'Thread' becomes a bare 'Task'.
+                string task = member.Expression is MemberAccessExpressionSyntax
+                    ? "System.Threading.Tasks.Task"
+                    : "Task";
+                finding = finding with
+                {
+                    Fix = FindingFix.Replace("Replace with 'await Task.Delay'", parsed.SpanOf(invocation.Span),
+                        $"await {task}.Delay{invocation.ArgumentList}")
+                };
+            }
+            yield return finding;
         }
+    }
+
+    /// <summary>
+    /// Whether an 'await' can be written in front of this call: it stands alone as a statement,
+    /// it sits directly in the async method rather than in a lambda or local function of its own
+    /// (which may not be async), and no 'lock' lies between the two, since awaiting inside a lock
+    /// body is not permitted.
+    /// </summary>
+    private static bool CanAwaitInPlace(InvocationExpressionSyntax invocation)
+    {
+        if (invocation.Parent is not ExpressionStatementSyntax)
+        {
+            return false;
+        }
+        foreach (SyntaxNode ancestor in invocation.Ancestors())
+        {
+            switch (ancestor)
+            {
+                case MethodDeclarationSyntax:
+                    return true;
+                case AnonymousFunctionExpressionSyntax:
+                case LocalFunctionStatementSyntax:
+                case LockStatementSyntax:
+                    return false;
+            }
+        }
+        return false;
     }
 
     private IEnumerable<Finding> FindUnawaited(ParsedCSharp parsed, string filePath)
@@ -261,6 +303,14 @@ public sealed class AsyncSafetyRule : IRule
             {
                 continue;
             }
+            // The message offers a comment as one acceptable answer, so a block whose only content
+            // is a comment has already done what was asked. The comment sits in the trivia of the
+            // closing brace, being the only token after the opening one.
+            if (catchClause.Block.CloseBraceToken.LeadingTrivia.Any(t => t.IsKind(SyntaxKind.SingleLineCommentTrivia)
+                    || t.IsKind(SyntaxKind.MultiLineCommentTrivia)))
+            {
+                continue;
+            }
             yield return Create(SwallowedException, parsed, catchClause.Block.Span, filePath, "SwallowedException",
                 "This catch block discards the exception; log it, rethrow it, or state in a comment why it is safe to ignore.");
         }
@@ -288,8 +338,9 @@ public sealed class AsyncSafetyRule : IRule
                 {
                     continue;
                 }
-                yield return Create(RethrowLosesStackTrace, parsed, throwStatement.Span, filePath, "RethrowLosesStackTrace",
+                Finding finding = Create(RethrowLosesStackTrace, parsed, throwStatement.Span, filePath, "RethrowLosesStackTrace",
                     $"'throw {exceptionName};' resets the stack trace to this line. Use a bare 'throw;' to preserve where '{exceptionName}' was actually thrown.");
+                yield return finding with { Fix = FindingFix.Replace("Replace with 'throw;'", parsed.SpanOf(throwStatement.Span), "throw;") };
             }
         }
     }

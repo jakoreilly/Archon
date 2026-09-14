@@ -12,7 +12,15 @@ public sealed record SourceFile(string Path, string Language)
 }
 
 /// <summary>A parsed C# file. <see cref="Tree"/> is always present; parse errors are tolerated.</summary>
-public sealed record ParsedCSharp(SyntaxTree Tree, SyntaxNode Root);
+public sealed record ParsedCSharp(SyntaxTree Tree, SyntaxNode Root)
+{
+    /// <summary>A Roslyn character span as the line-and-column region findings and fixes carry.</summary>
+    public Findings.SourceSpan SpanOf(Microsoft.CodeAnalysis.Text.TextSpan span)
+    {
+        Microsoft.CodeAnalysis.Text.LinePositionSpan lineSpan = Tree.GetLineSpan(span).Span;
+        return new Findings.SourceSpan(lineSpan.Start.Line, lineSpan.Start.Character, lineSpan.End.Line, lineSpan.End.Character);
+    }
+}
 
 /// <summary>
 /// A parsed T-SQL file. <see cref="Fragment"/> is <c>null</c> when the text did not parse, in

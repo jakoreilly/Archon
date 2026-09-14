@@ -73,8 +73,9 @@ public sealed class GlobalizationRule : IRule
                 continue;
             }
             string replacement = member.Name.Identifier.Text == "ToUpper" ? "ToUpperInvariant" : "ToLowerInvariant";
-            yield return Create(parsed, invocation.Span, filePath,
+            Finding finding = Create(parsed, invocation.Span, filePath,
                 $"'.{member.Name.Identifier.Text}()' casts case using the current culture; prefer '.{replacement}()' unless this is shown to the user in their own culture.");
+            yield return finding with { Fix = FindingFix.Replace($"Replace with '.{replacement}()'", parsed.SpanOf(member.Name.Span), replacement) };
         }
     }
 
