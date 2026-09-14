@@ -7,12 +7,18 @@ using Archon.Core.Rules;
 
 namespace Archon.Core.Output;
 
-/// <summary>Output shapes a host can request. All three describe the same findings.</summary>
+/// <summary>Output shapes a host can request. All of them describe the same findings.</summary>
 public enum ReportFormat
 {
     Console,
     Json,
-    Sarif
+    Sarif,
+
+    /// <summary>
+    /// GitHub Actions workflow commands, one per finding, so a check run annotates the diff of a
+    /// pull request without a separate upload step.
+    /// </summary>
+    GitHub
 }
 
 /// <summary>
@@ -31,6 +37,7 @@ public static class Reporter
     {
         ReportFormat.Json => RenderJson(result, workspaceRoot),
         ReportFormat.Sarif => RenderSarif(result, registry, workspaceRoot),
+        ReportFormat.GitHub => RenderGitHub(result, workspaceRoot),
         _ => RenderConsole(result, workspaceRoot)
     };
 
@@ -52,14 +59,30 @@ public static class Reporter
             builder.AppendLine($"note: {diagnostic}");
         }
 
+        AppendSummary(builder, result);
+        return builder.ToString();
+    }
+
+    /// <summary>The closing lines shared by the human-readable formats.</summary>
+    private static void AppendSummary(StringBuilder builder, AnalysisResult result)
+    {
         int errors = result.Findings.Count(f => f.Severity == Severity.Error);
         int warnings = result.Findings.Count(f => f.Severity == Severity.Warning);
         int lower = result.Findings.Count - errors - warnings;
 
-        builder.AppendLine($"{result.Findings.Count} finding(s): {errors} error, {warnings} warning, {lower} informational.");
+        string scope = result.Scope is null ? "" : $" in {result.Scope}";
+        builder.AppendLine($"{result.Findings.Count} finding(s){scope}: {errors} error, {warnings} warning, {lower} informational.");
+        if (result.Scope is not null)
+        {
+            builder.AppendLine($"{result.OutsideScope} finding(s) outside the change not shown.");
+        }
         if (result.BaselinedFindings.Count > 0)
         {
             builder.AppendLine($"{result.BaselinedFindings.Count} baselined finding(s) not counted.");
+        }
+        if (result.StaleBaselineEntries.Count > 0)
+        {
+            builder.AppendLine($"{result.StaleBaselineEntries.Count} baseline entrie(s) no longer match anything; 'archon baseline --prune' drops them.");
         }
 
         var failures = result.Skipped.Where(s => s.Reason.StartsWith("failed:", StringComparison.Ordinal)).ToList();
@@ -69,8 +92,57 @@ public static class Reporter
         }
 
         builder.AppendLine($"Analysed {result.FilesAnalysed} file(s) in {result.ElapsedMilliseconds} ms.");
+    }
+
+    /// <summary>
+    /// One workflow command per finding. The runner turns each into an annotation on the file and
+    /// line, shown inline on a pull request's diff when the line is part of the change. Messages
+    /// and property values are percent-encoded as the runner requires, since a newline or a comma
+    /// in a message would otherwise end the command early.
+    /// </summary>
+    private static string RenderGitHub(AnalysisResult result, string workspaceRoot)
+    {
+        var builder = new StringBuilder();
+        foreach (Finding finding in result.Findings
+                     .OrderBy(f => f.FilePath, StringComparer.OrdinalIgnoreCase)
+                     .ThenBy(f => f.Span.StartLine))
+        {
+            string command = finding.Severity switch
+            {
+                Severity.Error => "error",
+                Severity.Warning => "warning",
+                _ => "notice"
+            };
+            string file = Fingerprint.ToRelative(finding.FilePath, workspaceRoot).Replace('\\', '/');
+            int endLine = Math.Max(finding.Span.StartLine, finding.Span.EndLine);
+            builder.Append("::").Append(command)
+                .Append(" file=").Append(EscapeProperty(file))
+                .Append(",line=").Append(finding.Span.StartLine + 1)
+                .Append(",col=").Append(finding.Span.StartColumn + 1)
+                .Append(",endLine=").Append(endLine + 1);
+            if (endLine == finding.Span.StartLine && finding.Span.EndColumn > finding.Span.StartColumn)
+            {
+                builder.Append(",endColumn=").Append(finding.Span.EndColumn + 1);
+            }
+            builder.Append(",title=").Append(EscapeProperty(finding.RuleId))
+                .Append("::").Append(EscapeData($"{finding.RuleId}: {finding.Message}"))
+                .Append('\n');
+        }
+
+        foreach (string diagnostic in result.Diagnostics)
+        {
+            builder.Append("::notice::").Append(EscapeData(diagnostic)).Append('\n');
+        }
+
+        AppendSummary(builder, result);
         return builder.ToString();
     }
+
+    private static string EscapeData(string value) =>
+        value.Replace("%", "%25").Replace("\r", "%0D").Replace("\n", "%0A");
+
+    private static string EscapeProperty(string value) =>
+        EscapeData(value).Replace(":", "%3A").Replace(",", "%2C");
 
     private static string RenderJson(AnalysisResult result, string workspaceRoot)
     {
@@ -78,8 +150,17 @@ public static class Reporter
         {
             findings = result.Findings.Select(f => Describe(f, workspaceRoot)),
             baselined = result.BaselinedFindings.Select(f => Describe(f, workspaceRoot)),
+            staleBaseline = result.StaleBaselineEntries.Select(e => new
+            {
+                fingerprint = e.Fingerprint,
+                ruleId = e.RuleId,
+                file = e.File,
+                message = e.Message
+            }),
             skipped = result.Skipped.Select(s => new { ruleId = s.RuleId, reason = s.Reason }),
             diagnostics = result.Diagnostics,
+            scope = result.Scope,
+            outsideScope = result.OutsideScope,
             filesAnalysed = result.FilesAnalysed,
             elapsedMilliseconds = result.ElapsedMilliseconds
         };
@@ -99,7 +180,19 @@ public static class Reporter
         endLine = finding.Span.EndLine,
         endColumn = finding.Span.EndColumn,
         fingerprint = finding.Fingerprint,
-        explanation = finding.Explanation
+        explanation = finding.Explanation,
+        fix = finding.Fix is null ? null : new
+        {
+            title = finding.Fix.Title,
+            edits = finding.Fix.Edits.Select(e => new
+            {
+                startLine = e.Span.StartLine,
+                startColumn = e.Span.StartColumn,
+                endLine = e.Span.EndLine,
+                endColumn = e.Span.EndColumn,
+                newText = e.NewText
+            })
+        }
     };
 
     private static string RenderSarif(AnalysisResult result, RuleRegistry registry, string workspaceRoot)
@@ -126,7 +219,8 @@ public static class Reporter
         var results = new JsonArray();
         foreach (Finding finding in result.Findings)
         {
-            results.Add(new JsonObject
+            string uri = Fingerprint.ToRelative(finding.FilePath, workspaceRoot).Replace('\\', '/');
+            var entry = new JsonObject
             {
                 ["ruleId"] = finding.RuleId,
                 ["level"] = SarifLevel(finding.Severity),
@@ -138,21 +232,17 @@ public static class Reporter
                     {
                         ["physicalLocation"] = new JsonObject
                         {
-                            ["artifactLocation"] = new JsonObject
-                            {
-                                ["uri"] = Fingerprint.ToRelative(finding.FilePath, workspaceRoot).Replace('\\', '/')
-                            },
-                            ["region"] = new JsonObject
-                            {
-                                ["startLine"] = finding.Span.StartLine + 1,
-                                ["startColumn"] = finding.Span.StartColumn + 1,
-                                ["endLine"] = finding.Span.EndLine + 1,
-                                ["endColumn"] = finding.Span.EndColumn + 1
-                            }
+                            ["artifactLocation"] = new JsonObject { ["uri"] = uri },
+                            ["region"] = SarifRegion(finding.Span)
                         }
                     }
                 }
-            });
+            };
+            if (finding.Fix is not null)
+            {
+                entry["fixes"] = new JsonArray { SarifFix(finding.Fix, uri) };
+            }
+            results.Add(entry);
         }
 
         var log = new JsonObject
@@ -177,6 +267,40 @@ public static class Reporter
             }
         };
         return log.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+    }
+
+    private static JsonObject SarifRegion(SourceSpan span) => new()
+    {
+        ["startLine"] = span.StartLine + 1,
+        ["startColumn"] = span.StartColumn + 1,
+        ["endLine"] = span.EndLine + 1,
+        ["endColumn"] = span.EndColumn + 1
+    };
+
+    /// <summary>A fix in SARIF's own shape, so a viewer that offers fixes from a log can apply this one.</summary>
+    private static JsonObject SarifFix(FindingFix fix, string uri)
+    {
+        var replacements = new JsonArray();
+        foreach (TextEdit edit in fix.Edits)
+        {
+            replacements.Add(new JsonObject
+            {
+                ["deletedRegion"] = SarifRegion(edit.Span),
+                ["insertedContent"] = new JsonObject { ["text"] = edit.NewText }
+            });
+        }
+        return new JsonObject
+        {
+            ["description"] = new JsonObject { ["text"] = fix.Title },
+            ["artifactChanges"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["artifactLocation"] = new JsonObject { ["uri"] = uri },
+                    ["replacements"] = replacements
+                }
+            }
+        };
     }
 
     private static string SarifLevel(Severity severity) => severity switch

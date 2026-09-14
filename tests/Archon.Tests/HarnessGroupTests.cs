@@ -28,6 +28,8 @@ public sealed class HarnessGroupTests
         yield return new object[] { "CallGraphMemberChecks", (Action<Harness>)Program.CallGraphMemberChecks };
         yield return new object[] { "SuppressionRules", (Action<Harness>)Program.SuppressionRules };
         yield return new object[] { "BaselineRules", (Action<Harness>)Program.BaselineRules };
+        yield return new object[] { "BaselineHygieneRules", (Action<Harness>)Program.BaselineHygieneRules };
+        yield return new object[] { "EngineWorkItemRules", (Action<Harness>)Program.EngineWorkItemRules };
         yield return new object[] { "BaselineStabilityRules", (Action<Harness>)Program.BaselineStabilityRules };
         yield return new object[] { "SourceCacheRules", (Action<Harness>)Program.SourceCacheRules };
         yield return new object[] { "ProjectAttributionRules", (Action<Harness>)Program.ProjectAttributionRules };

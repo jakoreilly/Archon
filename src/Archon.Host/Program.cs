@@ -410,12 +410,30 @@ internal static class Program
         };
     }
 
+    /// <summary>The same shape the JSON report uses, so a client can read either.</summary>
+    private static JsonObject DescribeFix(FindingFix fix)
+    {
+        var edits = new JsonArray();
+        foreach (TextEdit edit in fix.Edits)
+        {
+            edits.Add(new JsonObject
+            {
+                ["startLine"] = edit.Span.StartLine,
+                ["startColumn"] = edit.Span.StartColumn,
+                ["endLine"] = edit.Span.EndLine,
+                ["endColumn"] = edit.Span.EndColumn,
+                ["newText"] = edit.NewText
+            });
+        }
+        return new JsonObject { ["title"] = fix.Title, ["edits"] = edits };
+    }
+
     private static JsonNode Describe(AnalysisResult result, string? scopePath)
     {
         var findings = new JsonArray();
         foreach (Finding finding in result.Findings)
         {
-            findings.Add(new JsonObject
+            var entry = new JsonObject
             {
                 ["ruleId"] = finding.RuleId,
                 ["severity"] = Reporter.Label(finding.Severity),
@@ -428,7 +446,12 @@ internal static class Program
                 ["endLine"] = finding.Span.EndLine,
                 ["endColumn"] = finding.Span.EndColumn,
                 ["fingerprint"] = finding.Fingerprint
-            });
+            };
+            if (finding.Fix is not null)
+            {
+                entry["fix"] = DescribeFix(finding.Fix);
+            }
+            findings.Add(entry);
         }
 
         var skipped = new JsonArray();
@@ -442,6 +465,7 @@ internal static class Program
             ["scope"] = scopePath,
             ["findings"] = findings,
             ["baselinedCount"] = result.BaselinedFindings.Count,
+            ["staleBaselineCount"] = result.StaleBaselineEntries.Count,
             ["failedRules"] = skipped,
             ["diagnostics"] = ToArray(result.Diagnostics),
             ["filesAnalysed"] = result.FilesAnalysed,

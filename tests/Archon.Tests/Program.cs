@@ -45,10 +45,13 @@ internal static class Program
         CallGraphTraceChecks(harness);
         SuppressionRules(harness);
         BaselineRules(harness);
+        BaselineHygieneRules(harness);
+        EngineWorkItemRules(harness);
         BaselineStabilityRules(harness);
         SourceCacheRules(harness);
         ProjectAttributionRules(harness);
         ConfigurationRules(harness);
+        ConfigOverrideRules(harness);
         ScopeRules(harness);
         RegistryRules(harness);
         GlobRules(harness);
@@ -62,6 +65,8 @@ internal static class Program
         HotspotRankingRules(harness);
         GitHistoryRules(harness);
         DebtRankingRules(harness);
+        ChangeSetRules(harness);
+        FixRules(harness);
         GitHistoryChurnSinceRules(harness);
         SchemaCatalogRules(harness);
         SchemaAwareSqlRules(harness);
@@ -574,6 +579,34 @@ internal static class Program
         harness.Equal("does not flag an unused parameter on an explicit interface implementation", 0,
             explicitInterfaceParam.Analyse().Findings.CountOf(UnusedSymbolsRule.UnusedParameter));
 
+        // An implicit implementation is indistinguishable from any other public method without
+        // symbols, so the base list's spelling decides: a type listing an 'IName' base has every
+        // public instance method exempted, and a type with only a class base does not.
+        var implicitInterfaceParam = new TestWorkspace();
+        implicitInterfaceParam.Add("a.cs", "class C : IFoo { public void M(int x) { } }");
+        harness.Equal("does not flag an unused parameter on a public method of a type that lists an interface", 0,
+            implicitInterfaceParam.Analyse().Findings.CountOf(UnusedSymbolsRule.UnusedParameter));
+
+        var implicitInterfaceQualified = new TestWorkspace();
+        implicitInterfaceQualified.Add("a.cs", "class C : Base, Some.Namespace.IFoo<int> { public void M(int x) { } }");
+        harness.Equal("recognises a qualified, generic interface name in the base list", 0,
+            implicitInterfaceQualified.Analyse().Findings.CountOf(UnusedSymbolsRule.UnusedParameter));
+
+        var privateOnInterfaceType = new TestWorkspace();
+        privateOnInterfaceType.Add("a.cs", "class C : IFoo { private void M(int x) { } public static void N(int y) { } }");
+        harness.Equal("still flags private and static methods on a type that lists an interface, which cannot implement it", 2,
+            privateOnInterfaceType.Analyse().Findings.CountOf(UnusedSymbolsRule.UnusedParameter));
+
+        var classBaseOnly = new TestWorkspace();
+        classBaseOnly.Add("a.cs", "class C : Base { public void M(int x) { } }");
+        harness.Equal("still flags a public method on a type whose only base is a class", 1,
+            classBaseOnly.Analyse().Findings.CountOf(UnusedSymbolsRule.UnusedParameter));
+
+        var interfaceDefaultBody = new TestWorkspace();
+        interfaceDefaultBody.Add("a.cs", "interface IFoo { void M(int x) { } }");
+        harness.Equal("does not flag a parameter on an interface member with a default body", 0,
+            interfaceDefaultBody.Analyse().Findings.CountOf(UnusedSymbolsRule.UnusedParameter));
+
         var eventHandlerParam = new TestWorkspace();
         eventHandlerParam.Add("a.cs", "class C { void OnClick(object sender, System.EventArgs e) { } }");
         harness.Equal("does not flag an event-handler-shaped method", 0,
@@ -800,6 +833,11 @@ internal static class Program
         handledCatch.Add("a.cs", "class C { void M() { try { } catch (System.Exception e) { Log(e); } } }");
         harness.Equal("does not flag a catch block that does something", 0,
             handledCatch.Analyse().Findings.CountOf(AsyncSafetyRule.SwallowedException));
+
+        var explainedCatch = new TestWorkspace();
+        explainedCatch.Add("a.cs", "class C { void M() { try { } catch (System.IO.IOException) {\n // Best effort: a stray handle must not fail the run.\n } } }");
+        harness.Equal("does not flag an empty catch block that explains itself in a comment, as its message invites", 0,
+            explainedCatch.Analyse().Findings.CountOf(AsyncSafetyRule.SwallowedException));
 
         var suppressed = new TestWorkspace();
         suppressed.Add("a.cs", "class C { async void Go() { } // archon-ignore[AR0012] required by the framework\n }");
@@ -1399,6 +1437,167 @@ internal static class Program
     /// duplicates by position alone breaks that: removing the first renumbers the rest, so a
     /// developer is failed by a check for findings they never touched.
     /// </summary>
+    internal static void BaselineHygieneRules(Harness harness)
+    {
+        harness.Group("Baseline hygiene: stale entries and pruning");
+
+        static BaselineEntry Entry(string fingerprint, string ruleId, string file) =>
+            new() { Fingerprint = fingerprint, RuleId = ruleId, File = file, Message = "x" };
+
+        var workspace = new TestWorkspace();
+        string aPath = workspace.Add("a.sql", "SELECT * FROM dbo.T;");
+        string bPath = workspace.Add("b.sql", "SELECT Id FROM dbo.T;");
+        Finding live = workspace.Analyse().Findings.FirstOf(SelectStarRule.Id)!;
+
+        // The workspace is in memory; the disk is consulted only for files it does not hold, so
+        // 'b.sql' is written out for the single-file pass below and one more file stands in for
+        // a file that is excluded from the pass but still present.
+        string onDiskPath = Path.Combine(Path.GetTempPath(), "archon-tests", "on-disk-only.sql");
+        Directory.CreateDirectory(Path.GetDirectoryName(onDiskPath)!);
+        File.WriteAllText(onDiskPath, "SELECT * FROM dbo.Elsewhere;");
+        File.WriteAllText(bPath, "SELECT Id FROM dbo.T;");
+        File.Delete(Path.Combine(Path.GetTempPath(), "archon-tests", "gone.sql"));
+
+        var baseline = new Baseline(new[]
+        {
+            Entry(live.Fingerprint, SelectStarRule.Id, "a.sql"),
+            Entry("stale0000000001", SelectStarRule.Id, "b.sql"),
+            Entry("stale0000000002", "ZZ9999", "b.sql"),
+            Entry("stale0000000003", SelectStarRule.Id, "on-disk-only.sql"),
+            Entry("stale0000000004", SelectStarRule.Id, "gone.sql")
+        });
+
+        AnalysisResult result = workspace.Analyse(baseline);
+        IReadOnlyList<string> stale = result.StaleBaselineEntries.Select(e => e.Fingerprint).ToList();
+        harness.Equal("an entry a finding matched is not stale", false, stale.Contains(live.Fingerprint));
+        harness.Equal("an entry for an analysed file that nothing matched is stale", true, stale.Contains("stale0000000001"));
+        harness.Equal("an entry for an unregistered rule is left undecided", false, stale.Contains("stale0000000002"));
+        harness.Equal("an entry for a file that exists but was not analysed is left undecided", false, stale.Contains("stale0000000003"));
+        harness.Equal("an entry for a file that no longer exists is stale", true, stale.Contains("stale0000000004"));
+        harness.Equal("only those two are reported", 2, stale.Count);
+
+        var switchedOff = new TestWorkspace().WithSeverity(SelectStarRule.Id, "off");
+        switchedOff.Add("b.sql", "SELECT Id FROM dbo.T;");
+        harness.Equal("an entry for a rule switched off is left undecided, since it could not have matched", 0,
+            switchedOff.Analyse(new Baseline(new[] { Entry("stale0000000001", SelectStarRule.Id, "b.sql") })).StaleBaselineEntries.Count);
+
+        // Off for a folder is off for the files in it: the entry could not have matched there any
+        // more than under a top-level 'off', and pruning it would drop accepted debt that comes
+        // straight back the day the block is loosened.
+        var offForFolder = new TestWorkspace().WithOverride(new[] { "tests/**" }, new() { [SelectStarRule.Id] = "off" });
+        offForFolder.Add("tests/b.sql", "SELECT Id FROM dbo.T;");
+        offForFolder.Add("src/c.sql", "SELECT Id FROM dbo.T;");
+        IReadOnlyList<string> staleUnderOverride = offForFolder.Analyse(new Baseline(new[]
+        {
+            Entry("stale0000000005", SelectStarRule.Id, "tests/b.sql"),
+            Entry("stale0000000006", SelectStarRule.Id, "src/c.sql")
+        })).StaleBaselineEntries.Select(e => e.Fingerprint).ToList();
+        harness.Equal("an entry for a rule switched off by an override block for its path is left undecided", false,
+            staleUnderOverride.Contains("stale0000000005"));
+        harness.Equal("while the same rule's entry outside the block is judged as usual", true,
+            staleUnderOverride.Contains("stale0000000006"));
+
+        AnalysisResult singleFile = workspace.AnalyseFileOnly(aPath, baseline);
+        IReadOnlyList<string> staleForOne = singleFile.StaleBaselineEntries.Select(e => e.Fingerprint).ToList();
+        harness.Equal("a single-file pass leaves entries for other files undecided", false, staleForOne.Contains("stale0000000001"));
+        harness.Equal("but still notices a file that is gone", true, staleForOne.Contains("stale0000000004"));
+
+        harness.Equal("an empty baseline has nothing stale", 0, workspace.Analyse().StaleBaselineEntries.Count);
+
+        IReadOnlyList<BaselineEntry> remaining = baseline.Without(result.StaleBaselineEntries);
+        harness.Equal("pruning keeps every entry that was not stale", 3, remaining.Count);
+        harness.Equal("and keeps the matched one among them", true, remaining.Any(e => e.Fingerprint == live.Fingerprint));
+
+        string savedPath = Path.Combine(Path.GetTempPath(), "archon-tests", "pruned-baseline.json");
+        Baseline.Save(savedPath, remaining);
+        Baseline reloaded = Baseline.Load(savedPath, out string? loadError);
+        harness.Equal("a pruned baseline round-trips through the file", 3, reloaded.Count);
+        harness.Equal("without a read error", null, loadError);
+        harness.Equal("and is written in file order", "a.sql", reloaded.Entries[0].File);
+
+        File.Delete(onDiskPath);
+        File.Delete(bPath);
+        File.Delete(savedPath);
+    }
+
+    /// <summary>
+    /// A rule that throws on one file by name and reports on every other, for testing failure
+    /// isolation. It declares a second id it never reports, so a test can ask what a failure
+    /// recorded against the first id means for entries filed under the second.
+    /// </summary>
+    private sealed class ThrowsOnFileRule : IRule
+    {
+        public const string Id = "TT0001";
+
+        public const string SecondaryId = "TT0002";
+
+        public IReadOnlyList<RuleDescriptor> Descriptors { get; } = new[]
+        {
+            new RuleDescriptor(Id, "Throws on 'bad.cs'", "test", Severity.Warning, "Test-only."),
+            new RuleDescriptor(SecondaryId, "Never reported", "test", Severity.Warning, "Test-only.")
+        };
+
+        public RuleScope Scope => RuleScope.File;
+
+        public string Language => RuleLanguages.CSharp;
+
+        public IEnumerable<Finding> Analyze(RuleContext context)
+        {
+            string path = context.TargetFile!.Path;
+            if (path.EndsWith("bad.cs", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("boom");
+            }
+            yield return new Finding { RuleId = Id, FilePath = path, Message = "seen" };
+        }
+    }
+
+    private sealed class ThrowsOnFilePack : IRulePack
+    {
+        public string Name => "test";
+
+        public IEnumerable<IRule> CreateRules() => new IRule[] { new ThrowsOnFileRule() };
+    }
+
+    internal static void EngineWorkItemRules(Harness harness)
+    {
+        harness.Group("Engine: one unit of work per rule and file");
+
+        var workspace = new TestWorkspace(new ThrowsOnFilePack());
+        workspace.Add("good.cs", "class A { }");
+        workspace.Add("bad.cs", "class B { }");
+        workspace.Add("other.cs", "class C { }");
+        AnalysisResult result = workspace.Analyse();
+
+        harness.Equal("a rule that throws on one file still reports on the others", 2, result.Findings.CountOf(ThrowsOnFileRule.Id));
+        var failures = result.Skipped.Where(s => s.Reason.StartsWith("failed:", StringComparison.Ordinal)).ToList();
+        harness.Equal("the failure is recorded once", 1, failures.Count);
+        harness.Equal("against the rule", ThrowsOnFileRule.Id, failures[0].RuleId);
+        harness.Check("naming the file it failed on", failures[0].Reason.Contains("bad.cs", StringComparison.Ordinal));
+        harness.Check("and the exception's message", failures[0].Reason.Contains("boom", StringComparison.Ordinal));
+
+        // A failure is recorded under the rule's first id, but it is the rule that failed: an
+        // entry under any of its ids, in any file, is left undecided rather than pruned.
+        static BaselineEntry Entry(string fingerprint, string ruleId, string file) =>
+            new() { Fingerprint = fingerprint, RuleId = ruleId, File = file, Message = "x" };
+        IReadOnlyList<string> stale = workspace.Analyse(new Baseline(new[]
+        {
+            Entry("stale0000000001", ThrowsOnFileRule.SecondaryId, "bad.cs"),
+            Entry("stale0000000002", ThrowsOnFileRule.SecondaryId, "good.cs"),
+            Entry("stale0000000003", ThrowsOnFileRule.Id, "good.cs")
+        })).StaleBaselineEntries.Select(e => e.Fingerprint).ToList();
+        harness.Equal("a failed rule leaves entries under its other ids undecided", 0,
+            stale.Count(f => f is "stale0000000001" or "stale0000000002"));
+        harness.Equal("and entries under its own id in files it did not fail on", false, stale.Contains("stale0000000003"));
+
+        var many = new TestWorkspace(new ThrowsOnFilePack());
+        for (int i = 0; i < 64; i++)
+        {
+            many.Add($"f{i}.cs", "class A { }");
+        }
+        harness.Equal("every file's findings arrive when files outnumber cores", 64, many.Analyse().Findings.CountOf(ThrowsOnFileRule.Id));
+    }
+
     internal static void BaselineStabilityRules(Harness harness)
     {
         harness.Group("Baseline stability");
@@ -1853,6 +2052,96 @@ internal static class Program
             ArchonConfig.TryParseSeverity("none", out Severity none) && none == Severity.Off);
         harness.Check("an unknown severity name is rejected rather than guessed",
             !ArchonConfig.TryParseSeverity("severe", out _));
+    }
+
+    internal static void ConfigOverrideRules(Harness harness)
+    {
+        harness.Group("Path-scoped overrides");
+
+        var off = new TestWorkspace().WithOverride(new[] { "tests/**" }, new() { [SelectStarRule.Id] = "off" });
+        off.Add("src/a.sql", "SELECT * FROM dbo.T;");
+        off.Add("tests/b.sql", "SELECT * FROM dbo.T;");
+        AnalysisResult result = off.Analyse();
+        harness.Equal("a rule switched off for a folder still reports outside it", 1,
+            result.Findings.Count(f => f.RuleId == SelectStarRule.Id && f.FilePath.EndsWith("a.sql")));
+        harness.Equal("a rule switched off for a folder reports nothing inside it", 0,
+            result.Findings.Count(f => f.RuleId == SelectStarRule.Id && f.FilePath.EndsWith("b.sql")));
+        harness.Check("a rule off only in one folder is not reported as skipped",
+            !result.Skipped.Any(s => s.RuleId == SelectStarRule.Id));
+
+        var raised = new TestWorkspace().WithOverride(new[] { "src/Critical/**" }, new() { [SelectStarRule.Id] = "error" });
+        raised.Add("src/Critical/a.sql", "SELECT * FROM dbo.T;");
+        raised.Add("src/Other/b.sql", "SELECT * FROM dbo.T;");
+        IReadOnlyList<Finding> raisedFindings = raised.Analyse().Findings;
+        harness.Equal("a severity raised for a folder applies inside it", Severity.Error,
+            raisedFindings.First(f => f.FilePath.Contains("Critical")).Severity);
+        harness.Equal("a severity raised for a folder leaves the default elsewhere", Severity.Warning,
+            raisedFindings.First(f => f.FilePath.Contains("Other")).Severity);
+
+        var onlyInFolder = new TestWorkspace()
+            .WithSeverity(SelectStarRule.Id, "off")
+            .WithOverride(new[] { "src/**" }, new() { [SelectStarRule.Id] = "warning" });
+        onlyInFolder.Add("src/a.sql", "SELECT * FROM dbo.T;");
+        onlyInFolder.Add("other/b.sql", "SELECT * FROM dbo.T;");
+        IReadOnlyList<Finding> onlyInFolderFindings = onlyInFolder.Analyse().Findings;
+        harness.Equal("a rule off at the top level still runs for a folder that turns it on", 1,
+            onlyInFolderFindings.CountOf(SelectStarRule.Id));
+        harness.Check("and that finding is in the folder that turned it on",
+            onlyInFolderFindings.FirstOf(SelectStarRule.Id)?.FilePath.EndsWith("a.sql") == true);
+
+        var later = new TestWorkspace()
+            .WithOverride(new[] { "**/*.sql" }, new() { [SelectStarRule.Id] = "off" })
+            .WithOverride(new[] { "src/**" }, new() { [SelectStarRule.Id] = "hint" });
+        later.Add("src/a.sql", "SELECT * FROM dbo.T;");
+        harness.Equal("a later block wins over an earlier one where both match", Severity.Hint,
+            later.Analyse().Findings.FirstOf(SelectStarRule.Id)?.Severity ?? Severity.Off);
+
+        var categoryInBlock = new TestWorkspace()
+            .WithSeverity(SelectStarRule.Id, "error")
+            .WithOverride(new[] { "tests/**" }, new() { ["sql"] = "off" });
+        categoryInBlock.Add("tests/a.sql", "SELECT * FROM dbo.T;");
+        harness.Equal("a block's category entry beats a top-level rule id", 0,
+            categoryInBlock.Analyse().Findings.CountOf(SelectStarRule.Id));
+
+        var idInBlock = new TestWorkspace()
+            .WithOverride(new[] { "tests/**" }, new() { ["sql"] = "off", [SelectStarRule.Id] = "warning" });
+        idInBlock.Add("tests/a.sql", "SELECT * FROM dbo.T;");
+        harness.Equal("within a block a rule id beats its category", 1,
+            idInBlock.Analyse().Findings.CountOf(SelectStarRule.Id));
+
+        var session = new TestWorkspace().WithOverride(new[] { "src/**" }, new() { [SelectStarRule.Id] = "error" });
+        session.Config.SessionOverrides[SelectStarRule.Id] = Severity.Off;
+        session.Add("src/a.sql", "SELECT * FROM dbo.T;");
+        harness.Equal("a session override beats every block", 0, session.Analyse().Findings.CountOf(SelectStarRule.Id));
+
+        var options = new TestWorkspace()
+            .WithOption(SqlConventionRule.TemporaryTableNaming, """{ "pattern": "^#tmp[A-Z]" }""")
+            .WithOverride(new[] { "legacy/**" }, options: new() { [SqlConventionRule.TemporaryTableNaming] = """{ "pattern": "^#" }""" });
+        options.Add("src/a.sql", "CREATE TABLE #working (Id INT);");
+        options.Add("legacy/b.sql", "CREATE TABLE #working (Id INT);");
+        IReadOnlyList<Finding> optionFindings = options.Analyse().Findings;
+        harness.Equal("a block's options replace the top-level entry for matching files", 1,
+            optionFindings.CountOf(SqlConventionRule.TemporaryTableNaming));
+        harness.Check("and the finding is outside the block",
+            optionFindings.FirstOf(SqlConventionRule.TemporaryTableNaming)?.FilePath.EndsWith("a.sql") == true);
+
+        var fileOnly = new TestWorkspace().WithOverride(new[] { "tests/**" }, new() { [SelectStarRule.Id] = "off" });
+        string testFile = fileOnly.Add("tests/b.sql", "SELECT * FROM dbo.T;");
+        harness.Equal("a save-triggered pass honours the block for the saved file", 0,
+            fileOnly.AnalyseFileOnly(testFile).Findings.CountOf(SelectStarRule.Id));
+
+        var registry = new RuleRegistry();
+        registry.Add(new BuiltInRulePack());
+        var config = new ArchonConfig();
+        config.Overrides.Add(new ConfigOverride { Files = new List<string>() });
+        config.Overrides.Add(new ConfigOverride { Files = new List<string> { "tests/**" }, Rules = { ["AR010"] = "off" } });
+        IReadOnlyList<string> messages = ConfigValidator.Validate(config, registry);
+        harness.Check("a block naming no files is reported",
+            messages.Any(m => m.Contains("\"overrides\"[0] names no files", StringComparison.Ordinal)));
+        harness.Check("a misspelled id inside a block is reported against that block",
+            messages.Any(m => m.Contains("\"overrides\"[1].rules", StringComparison.Ordinal) && m.Contains("AR0010", StringComparison.Ordinal)));
+        harness.Check("the schema describes the overrides list",
+            ConfigSchema.Generate(registry).Contains("\"overrides\"", StringComparison.Ordinal));
     }
 
     internal static void ScopeRules(Harness harness)
@@ -2762,6 +3051,156 @@ internal static class Program
             ranked.First(e => e.Fingerprint == "old-and-churny").Score);
     }
 
+    internal static void FixRules(Harness harness)
+    {
+        harness.Group("Fixes: rewrites carried on findings and applied by the engine");
+
+        static string Fixed(string relativePath, string text)
+        {
+            var workspace = new TestWorkspace();
+            workspace.Add(relativePath, text);
+            IEnumerable<FindingFix> fixes = workspace.Analyse().Findings.Where(f => f.Fix is not null).Select(f => f.Fix!);
+            return FixApplier.Apply(text, fixes).Text;
+        }
+
+        harness.Equal("AR0020 rewrites 'Count() > 0' to 'Any()'",
+            "class C { bool M(System.Collections.Generic.List<int> xs) => xs.Any(); }",
+            Fixed("a.cs", "class C { bool M(System.Collections.Generic.List<int> xs) => xs.Count() > 0; }"));
+        harness.Equal("AR0020 rewrites 'Count() == 0' to '!Any()'",
+            "class C { bool M(System.Collections.Generic.List<int> xs) => !xs.Any(); }",
+            Fixed("a.cs", "class C { bool M(System.Collections.Generic.List<int> xs) => xs.Count() == 0; }"));
+        harness.Equal("AR0020 keeps a chained receiver intact",
+            "class C { bool M(System.Collections.Generic.List<int> xs) => xs.Where(x => x > 1).Any(); }",
+            Fixed("a.cs", "class C { bool M(System.Collections.Generic.List<int> xs) => xs.Where(x => x > 1).Count() != 0; }"));
+        harness.Equal("AR0020 leaves '1 >= Count()' alone, which asks for at most one",
+            "class C { bool M(System.Collections.Generic.List<int> xs) => 1 >= xs.Count(); }",
+            Fixed("a.cs", "class C { bool M(System.Collections.Generic.List<int> xs) => 1 >= xs.Count(); }"));
+        harness.Equal("AR0022 removes the copy",
+            "class C { object M(System.Collections.Generic.List<int> xs) => xs.Where(x => x > 1); }",
+            Fixed("a.cs", "class C { object M(System.Collections.Generic.List<int> xs) => xs.ToList().Where(x => x > 1); }"));
+        harness.Equal("AR0090 swaps in the invariant call",
+            "class C { string M(string s) => s.ToLowerInvariant(); }",
+            Fixed("a.cs", "class C { string M(string s) => s.ToLower(); }"));
+        harness.Equal("AR0014 replaces the rethrow",
+            "class C { void M() { try { } catch (System.Exception ex) { throw; } } }",
+            Fixed("a.cs", "class C { void M() { try { } catch (System.Exception ex) { throw ex; } } }"));
+        harness.Equal("AR0015 awaits Task.Delay in place of Thread.Sleep",
+            "class C { async Task M() { await Task.Delay(1000); } }",
+            Fixed("a.cs", "class C { async Task M() { Thread.Sleep(1000); } }"));
+        harness.Equal("AR0015 qualifies Task as far as Thread was qualified",
+            "class C { async System.Threading.Tasks.Task M() { await System.Threading.Tasks.Task.Delay(System.TimeSpan.FromSeconds(1)); } }",
+            Fixed("a.cs", "class C { async System.Threading.Tasks.Task M() { System.Threading.Thread.Sleep(System.TimeSpan.FromSeconds(1)); } }"));
+        harness.Equal("AR0015 offers no fix inside a lambda, which may not be async",
+            "class C { async Task M() { Run(() => { Thread.Sleep(1); }); } }",
+            Fixed("a.cs", "class C { async Task M() { Run(() => { Thread.Sleep(1); }); } }"));
+        harness.Equal("AR0015 offers no fix inside a local function",
+            "class C { async Task M() { void Pause() { Thread.Sleep(1); } Pause(); } }",
+            Fixed("a.cs", "class C { async Task M() { void Pause() { Thread.Sleep(1); } Pause(); } }"));
+        harness.Equal("AR0015 offers no fix inside a lock, where await is not allowed",
+            "class C { async Task M() { lock (this) { Thread.Sleep(1); } } }",
+            Fixed("a.cs", "class C { async Task M() { lock (this) { Thread.Sleep(1); } } }"));
+        harness.Equal("SQ0021 rewrites '= NULL' to 'IS NULL'",
+            "SELECT Id FROM dbo.Orders WHERE Status IS NULL;",
+            Fixed("a.sql", "SELECT Id FROM dbo.Orders WHERE Status = NULL;"));
+        harness.Equal("SQ0021 rewrites '<> NULL' to 'IS NOT NULL' with the literal on the left",
+            "SELECT Id FROM dbo.Orders WHERE [Name] IS NOT NULL;",
+            Fixed("a.sql", "SELECT Id FROM dbo.Orders WHERE NULL <> [Name];"));
+        harness.Equal("two fixes on one line are both applied",
+            "SELECT Id FROM dbo.Orders WHERE Status IS NULL AND [Name] IS NOT NULL;",
+            Fixed("a.sql", "SELECT Id FROM dbo.Orders WHERE Status = NULL AND [Name] != NULL;"));
+
+        var span = new SourceSpan(0, 0, 0, 3);
+        FixApplier.Outcome overlapping = FixApplier.Apply("abcdef", new[]
+        {
+            FindingFix.Replace("first", span, "X"),
+            FindingFix.Replace("second", new SourceSpan(0, 2, 0, 5), "Y"),
+            FindingFix.Replace("third", new SourceSpan(0, 5, 0, 6), "Z")
+        });
+        harness.Equal("an overlapping fix is deferred rather than applied over another", 1, overlapping.Deferred);
+        harness.Equal("the non-overlapping fixes are applied", 2, overlapping.Applied);
+        harness.Equal("and the text reflects only those", "XdeZ", overlapping.Text);
+
+        FixApplier.Outcome multiLine = FixApplier.Apply("line0\nline1\nline2", new[]
+        {
+            FindingFix.Replace("late", new SourceSpan(2, 0, 2, 5), "L2"),
+            FindingFix.Replace("early", new SourceSpan(0, 0, 0, 5), "L0")
+        });
+        harness.Equal("edits on different lines are applied back to front so offsets stay valid", "L0\nline1\nL2", multiLine.Text);
+
+        FixApplier.Outcome outOfRange = FixApplier.Apply("short", new[] { FindingFix.Replace("bad", new SourceSpan(4, 0, 4, 1), "x") });
+        harness.Equal("an edit outside the text is ignored", 0, outOfRange.Applied);
+        harness.Equal("and leaves the text alone", "short", outOfRange.Text);
+    }
+
+    internal static void ChangeSetRules(Harness harness)
+    {
+        harness.Group("Change set: findings confined to changed lines");
+
+        const string diff = """
+            diff --git a/src/A.cs b/src/A.cs
+            index 1111111..2222222 100644
+            --- a/src/A.cs
+            +++ b/src/A.cs
+            @@ -10,0 +11,3 @@ class A
+            +    int a;
+            +    int b;
+            +    int c;
+            @@ -40 +44 @@ class A
+            -    old();
+            +    changed();
+            @@ -50,2 +54,0 @@ class A
+            -    gone();
+            -    gone2();
+            diff --git a/src/New.cs b/src/New.cs
+            new file mode 100644
+            --- /dev/null
+            +++ b/src/New.cs
+            @@ -0,0 +1,2 @@
+            +class New {
+            +}
+            diff --git a/src/Old.cs b/src/Old.cs
+            deleted file mode 100644
+            --- a/src/Old.cs
+            +++ /dev/null
+            @@ -1,2 +0,0 @@
+            -class Old {
+            -}
+            """;
+        ChangeSet changes = ChangeSet.Parse(diff);
+
+        harness.Equal("counts the files with changed lines", 2, changes.FileCount);
+        harness.Check("a multi-line addition marks each added line (zero-based)",
+            changes.Contains("src/A.cs", 10) && changes.Contains("src/A.cs", 12));
+        harness.Check("the line before an addition is unchanged", !changes.Contains("src/A.cs", 9));
+        harness.Check("the line after an addition is unchanged", !changes.Contains("src/A.cs", 13));
+        harness.Check("a hunk header without a count means one line", changes.Contains("src/A.cs", 43));
+        harness.Check("a pure deletion marks nothing", !changes.Contains("src/A.cs", 53));
+        harness.Check("every line of a new file is changed", changes.Contains("src/New.cs", 0) && changes.Contains("src/New.cs", 1));
+        harness.Check("a deleted file has no changed lines", !changes.Contains("src/Old.cs", 0));
+        harness.Check("backslashes in a queried path are accepted", changes.Contains("src\\A.cs", 11));
+        harness.Check("a span overlapping a changed line intersects",
+            changes.Intersects("src/A.cs", new SourceSpan(8, 0, 10, 5)));
+        harness.Check("a span entirely outside changed lines does not",
+            !changes.Intersects("src/A.cs", new SourceSpan(20, 0, 30, 0)));
+
+        var workspace = new TestWorkspace();
+        workspace.Add("src/A.cs", "class A { void M() { try { } catch { } } }");
+        AnalysisResult full = workspace.Analyse();
+        harness.Check("the fixture produces a finding to filter", full.Findings.Count > 0);
+
+        ChangeSet none = ChangeSet.Parse("");
+        AnalysisResult filtered = none.Filter(full, workspace.Config.WorkspaceRoot, "changed lines since main");
+        harness.Equal("a finding outside the change is removed", 0, filtered.Findings.Count);
+        harness.Equal("and counted as outside the scope", full.Findings.Count, filtered.OutsideScope);
+        harness.Equal("the scope description is carried on the result", "changed lines since main", filtered.Scope);
+        harness.Equal("what was analysed is unchanged by the filter", full.FilesAnalysed, filtered.FilesAnalysed);
+
+        ChangeSet firstLine = ChangeSet.Parse("+++ b/src/A.cs\n@@ -1 +1 @@\n");
+        AnalysisResult kept = firstLine.Filter(full, workspace.Config.WorkspaceRoot, "changed lines since main");
+        harness.Equal("a finding on a changed line is kept", full.Findings.Count, kept.Findings.Count);
+        harness.Equal("nothing is then outside the scope", 0, kept.OutsideScope);
+    }
+
     internal static void GitHistoryChurnSinceRules(Harness harness)
     {
         harness.Group("GitHistory: commit count since a point in time");
@@ -3038,6 +3477,31 @@ internal static class Program
         multipleDeclarators.Add("a.cs", "class C { public int X, Y; }");
         harness.Equal("flags each declarator sharing one public field declaration", 2,
             multipleDeclarators.Analyse().Findings.CountOf(FieldVisibilityRule.MutablePublicField));
+
+        var privateNested = new TestWorkspace();
+        privateNested.Add("a.cs", "class Outer { private sealed class Entry { public int Total; } }");
+        harness.Equal("does not flag a public field on a private nested class, which only the outer type can reach", 0,
+            privateNested.Analyse().Findings.CountOf(FieldVisibilityRule.MutablePublicField));
+
+        var defaultNested = new TestWorkspace();
+        defaultNested.Add("a.cs", "class Outer { class Entry { public int Total; } }");
+        harness.Equal("treats a nested class with no accessibility modifier as private", 0,
+            defaultNested.Analyse().Findings.CountOf(FieldVisibilityRule.MutablePublicField));
+
+        var publicNested = new TestWorkspace();
+        publicNested.Add("a.cs", "class Outer { public class Entry { public int Total; } internal class Other { public int Count; } protected class Third { public int N; } }");
+        harness.Equal("flags fields on public, internal and protected nested classes", 3,
+            publicNested.Analyse().Findings.CountOf(FieldVisibilityRule.MutablePublicField));
+
+        var privateProtectedNested = new TestWorkspace();
+        privateProtectedNested.Add("a.cs", "class Outer { private protected class Entry { public int Total; } }");
+        harness.Equal("flags a field on a 'private protected' nested class, which derived types can reach", 1,
+            privateProtectedNested.Analyse().Findings.CountOf(FieldVisibilityRule.MutablePublicField));
+
+        var deeplyNested = new TestWorkspace();
+        deeplyNested.Add("a.cs", "class Outer { private class Middle { public class Entry { public int Total; } } }");
+        harness.Equal("a public class nested inside a private one is still private to the outer type", 0,
+            deeplyNested.Analyse().Findings.CountOf(FieldVisibilityRule.MutablePublicField));
     }
 
     internal static void GlobalizationRules(Harness harness)
