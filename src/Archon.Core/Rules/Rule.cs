@@ -64,12 +64,18 @@ public sealed class RuleContext
     /// <summary>
     /// Whether a reported id is switched on for this pass. A rule with an optional and costly
     /// check consults this first so that a disabled condition costs nothing, rather than being
-    /// computed and then discarded.
+    /// computed and then discarded. For a file-scope rule the answer is specific to
+    /// <see cref="TargetFile"/>; for a wider scope it is whether any file could see the id.
     /// </summary>
     public required Func<string, bool> IsEnabled { get; init; }
 
-    /// <summary>Returns the rule's own options object, or <c>null</c> when unconfigured.</summary>
-    public System.Text.Json.JsonElement? OptionsFor(string ruleId) => Config.OptionFor(ruleId);
+    /// <summary>
+    /// Returns the rule's own options object, or <c>null</c> when unconfigured. For a file-scope
+    /// rule an override block matching <see cref="TargetFile"/> takes precedence; wider scopes read
+    /// the top-level entry, since they have no single file to match against.
+    /// </summary>
+    public System.Text.Json.JsonElement? OptionsFor(string ruleId) =>
+        Config.OptionFor(ruleId, TargetFile is null ? null : Config.RelativePathOf(TargetFile.Path));
 }
 
 /// <summary>

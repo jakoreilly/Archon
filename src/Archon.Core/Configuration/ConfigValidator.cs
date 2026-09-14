@@ -47,10 +47,40 @@ public static class ConfigValidator
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         ValidateUnknownKeys(config, messages);
-        ValidateRules(config, registry, ruleIds, categories, messages);
-        ValidateOptions(config, ruleIds, messages);
+        ValidateRules(config.Rules, "\"rules\"", registry, ruleIds, categories, messages);
+        ValidateOptions(config.Options, "\"options\"", ruleIds, messages);
+        ValidateOverrides(config, registry, ruleIds, categories, messages);
         ValidateLayers(config, messages);
         return messages;
+    }
+
+    /// <summary>
+    /// An override block is checked with the same rules as the top level, labelled by its position
+    /// so the message points at the block rather than at a key that may also exist above it. A block
+    /// naming no files is reported too: it parses, and then applies to nothing.
+    /// </summary>
+    private static void ValidateOverrides(
+        ArchonConfig config,
+        RuleRegistry registry,
+        HashSet<string> ruleIds,
+        HashSet<string> categories,
+        List<string> messages)
+    {
+        for (int i = 0; i < config.Overrides.Count; i++)
+        {
+            ConfigOverride block = config.Overrides[i];
+            string label = $"\"overrides\"[{i}]";
+            if (block.Files.Count == 0 || block.Files.All(string.IsNullOrWhiteSpace))
+            {
+                messages.Add($"Configuration: {label} names no files, so it applies to nothing.");
+            }
+            if (block.Rules.Count == 0 && block.Options.Count == 0)
+            {
+                messages.Add($"Configuration: {label} has neither \"rules\" nor \"options\", so it changes nothing.");
+            }
+            ValidateRules(block.Rules, $"{label}.rules", registry, ruleIds, categories, messages);
+            ValidateOptions(block.Options, $"{label}.options", ruleIds, messages);
+        }
     }
 
     private static void ValidateUnknownKeys(ArchonConfig config, List<string> messages)
@@ -65,15 +95,16 @@ public static class ConfigValidator
     }
 
     private static void ValidateRules(
-        ArchonConfig config,
+        Dictionary<string, string> rules,
+        string mapName,
         RuleRegistry registry,
         HashSet<string> ruleIds,
         HashSet<string> categories,
         List<string> messages)
     {
-        foreach (string key in config.Rules.Keys.OrderBy(k => k, StringComparer.Ordinal))
+        foreach (string key in rules.Keys.OrderBy(k => k, StringComparer.Ordinal))
         {
-            string value = config.Rules[key];
+            string value = rules[key];
             bool known = ruleIds.Contains(key) || categories.Contains(key);
 
             if (!known)
@@ -82,8 +113,8 @@ public static class ConfigValidator
                 // against both and the nearer of the two is offered.
                 string? suggestion = Nearest(key, ruleIds.Concat(categories));
                 messages.Add(suggestion is null
-                    ? $"Configuration: '{key}' in \"rules\" is not a known rule id or category, so the entry has no effect."
-                    : $"Configuration: '{key}' in \"rules\" is not a known rule id or category — did you mean '{suggestion}'? The entry has no effect.");
+                    ? $"Configuration: '{key}' in {mapName} is not a known rule id or category, so the entry has no effect."
+                    : $"Configuration: '{key}' in {mapName} is not a known rule id or category — did you mean '{suggestion}'? The entry has no effect.");
                 continue;
             }
 
@@ -100,14 +131,18 @@ public static class ConfigValidator
                 : $"the '{key}' category keeps each rule's default";
             string didYouMean = severitySuggestion is null ? "" : $" Did you mean '{severitySuggestion}'?";
             messages.Add(
-                $"Configuration: \"rules\" entry '{key}' has the value '{value}', which is not a severity."
+                $"Configuration: {mapName} entry '{key}' has the value '{value}', which is not a severity."
                 + $"{didYouMean} Use one of {string.Join(", ", ArchonConfig.SeverityNames)}. The entry has no effect and {effect}.");
         }
     }
 
-    private static void ValidateOptions(ArchonConfig config, HashSet<string> ruleIds, List<string> messages)
+    private static void ValidateOptions(
+        Dictionary<string, System.Text.Json.JsonElement> options,
+        string mapName,
+        HashSet<string> ruleIds,
+        List<string> messages)
     {
-        foreach (string key in config.Options.Keys.OrderBy(k => k, StringComparer.Ordinal))
+        foreach (string key in options.Keys.OrderBy(k => k, StringComparer.Ordinal))
         {
             if (ruleIds.Contains(key))
             {
@@ -115,8 +150,8 @@ public static class ConfigValidator
             }
             string? suggestion = Nearest(key, ruleIds);
             messages.Add(suggestion is null
-                ? $"Configuration: \"options\" has an entry for '{key}', which is not a known rule id, so it is never read."
-                : $"Configuration: \"options\" has an entry for '{key}', which is not a known rule id — did you mean '{suggestion}'? It is never read.");
+                ? $"Configuration: {mapName} has an entry for '{key}', which is not a known rule id, so it is never read."
+                : $"Configuration: {mapName} has an entry for '{key}', which is not a known rule id — did you mean '{suggestion}'? It is never read.");
         }
     }
 

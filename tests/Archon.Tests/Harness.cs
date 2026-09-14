@@ -109,6 +109,22 @@ internal sealed class TestWorkspace
         return this;
     }
 
+    /// <summary>Appends an override block, as one entry of the configuration file's "overrides" list.</summary>
+    public TestWorkspace WithOverride(string[] files, Dictionary<string, string>? rules = null, Dictionary<string, string>? options = null)
+    {
+        var block = new ConfigOverride { Files = files.ToList() };
+        foreach ((string key, string value) in rules ?? new Dictionary<string, string>())
+        {
+            block.Rules[key] = value;
+        }
+        foreach ((string key, string json) in options ?? new Dictionary<string, string>())
+        {
+            block.Options[key] = System.Text.Json.JsonDocument.Parse(json).RootElement.Clone();
+        }
+        Config.Overrides.Add(block);
+        return this;
+    }
+
     /// <summary>Runs every scope over the registered files.</summary>
     public AnalysisResult Analyse(Baseline? baseline = null)
     {
