@@ -1,6 +1,13 @@
 <#
     Increments the extension's build number (the patch segment of the semver
-    version in package.json), e.g. 0.2.4 -> 0.2.5.
+    version in package.json), e.g. 0.2.4 -> 0.2.5, and sets every other place
+    the number is written to match: package-lock.json, both READMEs' example
+    .vsix filename, and <Version> in the repository's Directory.Build.props, so
+    the command line, the host and the extension report one version.
+
+    package.json is the number that is incremented; the others are overwritten
+    with the result whatever they held, which is how drift between them is
+    repaired as well as prevented.
 
     Run from anywhere; the script locates its own directory.
 
@@ -54,12 +61,31 @@ if (Test-Path $lockPath) {
     [System.IO.File]::WriteAllText($lockPath, $lockUpdated, (New-Object System.Text.UTF8Encoding($false)))
 }
 
-# README.md references an example .vsix filename that embeds the version.
-$readmePath = Join-Path $PSScriptRoot 'README.md'
-if (Test-Path $readmePath) {
-    $readmeContent = [System.IO.File]::ReadAllText($readmePath)
-    $readmeUpdated = $readmeContent -replace [regex]::Escape("archon-analysis-$oldVersion.vsix"), "archon-analysis-$newVersion.vsix"
-    [System.IO.File]::WriteAllText($readmePath, $readmeUpdated, (New-Object System.Text.UTF8Encoding($false)))
+# Both READMEs reference an example .vsix filename that embeds the version. Whatever version
+# they name is replaced, not only the one package.json held, so a README left behind by an
+# earlier bump is caught up rather than skipped.
+$repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..')
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+$vsixPattern = 'archon-analysis-\d+\.\d+\.\d+\.vsix'
+foreach ($readmePath in @((Join-Path $PSScriptRoot 'README.md'), (Join-Path $repoRoot 'README.md'))) {
+    if (Test-Path $readmePath) {
+        $readmeContent = [System.IO.File]::ReadAllText($readmePath, [System.Text.Encoding]::UTF8)
+        $readmeUpdated = [regex]::Replace($readmeContent, $vsixPattern, "archon-analysis-$newVersion.vsix")
+        [System.IO.File]::WriteAllText($readmePath, $readmeUpdated, $utf8NoBom)
+    }
 }
 
-Write-Host "Bumped version: $oldVersion -> $newVersion" -ForegroundColor Green
+# Directory.Build.props is the one version every .NET project builds with. It is set to the new
+# number outright: package.json is the counter, this file follows it.
+$propsPath = Join-Path $repoRoot 'Directory.Build.props'
+if (Test-Path $propsPath) {
+    $propsContent = [System.IO.File]::ReadAllText($propsPath, [System.Text.Encoding]::UTF8)
+    $propsPattern = '<Version>\d+\.\d+\.\d+</Version>'
+    if (-not [regex]::IsMatch($propsContent, $propsPattern)) {
+        throw "Could not find a <Version> element in $propsPath"
+    }
+    $propsUpdated = [regex]::Replace($propsContent, $propsPattern, "<Version>$newVersion</Version>")
+    [System.IO.File]::WriteAllText($propsPath, $propsUpdated, $utf8NoBom)
+}
+
+Write-Host "Bumped version: $oldVersion -> $newVersion (package.json, package-lock.json, READMEs, Directory.Build.props)" -ForegroundColor Green
