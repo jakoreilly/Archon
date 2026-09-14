@@ -119,7 +119,12 @@ public sealed class AnalysisEngine
         };
 
         var pass = new Pass(workspace, config, enabledAnywhere, produced, skipped, cancellationToken);
-        Parallel.ForEach(WorkItems(active, workspace, targetFile), parallelOptions, item => Execute(item, pass));
+        // Items are handed out one at a time. The default partitioner buffers chunks that grow as
+        // the loop runs, so late in a pass one worker can be given hundreds of files while the
+        // others drain and stop; taking one item per lock keeps every core busy to the end, and
+        // the lock costs nothing against the syntax walk each item does.
+        var items = Partitioner.Create(WorkItems(active, workspace, targetFile), EnumerablePartitionerOptions.NoBuffering);
+        Parallel.ForEach(items, parallelOptions, item => Execute(item, pass));
 
         foreach (string diagnostic in _registry.LoadDiagnostics)
         {
@@ -281,25 +286,39 @@ public sealed class AnalysisEngine
     /// </summary>
     private sealed record WorkItem(IRule Rule, SourceFile? File);
 
+    /// <summary>
+    /// The wider scopes come first: each is one item that walks the whole workspace, so it is
+    /// the longest thing in the run, and handed out among thousands of file items it could start
+    /// last and finish alone while every other core sat idle. File items follow grouped by file,
+    /// every rule for one file before the next file, so the worker that parses a file is the one
+    /// that walks it twenty times while its tree is still in that core's cache. Grouped by rule
+    /// instead, each rule streamed every tree through memory again, and a pass over six hundred
+    /// files measured slower than the per-rule engine it replaced.
+    /// </summary>
     private static IEnumerable<WorkItem> WorkItems(IEnumerable<IRule> active, WorkspaceModel workspace, SourceFile? targetFile)
     {
+        var fileRules = new List<IRule>();
         foreach (IRule rule in active)
         {
-            if (rule.Scope != RuleScope.File)
+            if (rule.Scope == RuleScope.File)
+            {
+                fileRules.Add(rule);
+            }
+            else
             {
                 yield return new WorkItem(rule, null);
-                continue;
             }
+        }
 
-            IEnumerable<SourceFile> candidates = targetFile is null
-                ? workspace.FilesOfLanguage(rule.Language)
-                : rule.Language == RuleLanguages.Any || targetFile.Language == rule.Language
-                    ? new[] { targetFile }
-                    : Array.Empty<SourceFile>();
-
-            foreach (SourceFile file in candidates)
+        IEnumerable<SourceFile> files = targetFile is null ? workspace.Files : new[] { targetFile };
+        foreach (SourceFile file in files)
+        {
+            foreach (IRule rule in fileRules)
             {
-                yield return new WorkItem(rule, file);
+                if (rule.Language == RuleLanguages.Any || rule.Language == file.Language)
+                {
+                    yield return new WorkItem(rule, file);
+                }
             }
         }
     }

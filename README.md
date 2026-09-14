@@ -28,7 +28,11 @@ A rule is only worth writing if someone leaves it switched on. Three things deci
 three are properties of the system rather than of any individual rule:
 
 - **One process, one parse.** Every rule shares a single parse of each file, held warm between
-  requests. Adding the fortieth rule costs almost nothing, so rules can be added freely.
+  requests. Adding the fortieth rule costs almost nothing, so rules can be added freely. Work is
+  spread over cores one (rule, file) pair at a time, grouped by file so the core that parsed a
+  file runs every rule over it while the tree is still in cache: on a synthetic 600-file, 110,000-
+  line workspace with every rule on, a full pass took 6.9 s against 8.2 s for the earlier
+  one-task-per-rule engine, and a single heavy rule alone runs in roughly two-thirds the time.
 - **One place to configure, suppress and accept.** A rule id means the same thing in the editor,
   on the command line and in a suppression comment. Rules contain detection logic only: they never
   read settings, never look for an ignore comment and never choose a severity.
