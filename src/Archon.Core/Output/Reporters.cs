@@ -33,10 +33,15 @@ public static class Reporter
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 
-    public static string Render(AnalysisResult result, RuleRegistry registry, string workspaceRoot, ReportFormat format) => format switch
+    /// <summary>
+    /// Renders <paramref name="result"/> in <paramref name="format"/>. <paramref name="includeBaselined"/>
+    /// applies to SARIF only: it adds the baselined findings as suppressed results, for a consumer
+    /// that honours SARIF suppressions.
+    /// </summary>
+    public static string Render(AnalysisResult result, RuleRegistry registry, string workspaceRoot, ReportFormat format, bool includeBaselined = false) => format switch
     {
         ReportFormat.Json => RenderJson(result, workspaceRoot),
-        ReportFormat.Sarif => RenderSarif(result, registry, workspaceRoot),
+        ReportFormat.Sarif => RenderSarif(result, registry, workspaceRoot, includeBaselined),
         ReportFormat.GitHub => RenderGitHub(result, workspaceRoot),
         _ => RenderConsole(result, workspaceRoot)
     };
@@ -210,15 +215,17 @@ public static class Reporter
             : "unknown";
 
     /// <summary>
-    /// SARIF 2.1.0. Baselined findings are emitted as well as reportable ones, each marked with
-    /// its <c>baselineState</c> and, for a baselined one, an external suppression naming the
-    /// baseline file: a viewer that tracks alerts across uploads then sees accepted debt as
-    /// accepted rather than as absent one run and new the next, and a gate that reads the log
-    /// can still tell the two apart.
+    /// SARIF 2.1.0. Every result carries its <c>baselineState</c>. By default the log holds only
+    /// the reportable findings, so a consumer sees exactly what <c>--fail-on</c> judged: GitHub
+    /// Code Scanning ignores <c>suppressions</c> and would otherwise raise every baselined finding
+    /// as an open alert. With <paramref name="includeBaselined"/> the baselined findings are
+    /// emitted too, each with an external suppression naming the baseline file, for a viewer that
+    /// honours suppressions and tracks accepted debt across uploads.
     /// </summary>
-    private static string RenderSarif(AnalysisResult result, RuleRegistry registry, string workspaceRoot)
+    private static string RenderSarif(AnalysisResult result, RuleRegistry registry, string workspaceRoot, bool includeBaselined)
     {
-        var reportedRuleIds = result.Findings.Concat(result.BaselinedFindings)
+        IReadOnlyList<Finding> baselined = includeBaselined ? result.BaselinedFindings : Array.Empty<Finding>();
+        var reportedRuleIds = result.Findings.Concat(baselined)
             .Select(f => f.RuleId)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(id => id, StringComparer.Ordinal)
@@ -237,7 +244,7 @@ public static class Reporter
         {
             results.Add(SarifResult(finding, ruleIndex[finding.RuleId], workspaceRoot, baselined: false));
         }
-        foreach (Finding finding in result.BaselinedFindings)
+        foreach (Finding finding in baselined)
         {
             results.Add(SarifResult(finding, ruleIndex[finding.RuleId], workspaceRoot, baselined: true));
         }

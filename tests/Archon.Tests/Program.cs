@@ -3201,7 +3201,15 @@ internal static class Program
 
         var registry = new RuleRegistry();
         registry.Add(new BuiltInRulePack());
-        string text = Reporter.Render(result, registry, workspace.Config.WorkspaceRoot, ReportFormat.Sarif);
+        string defaultText = Reporter.Render(result, registry, workspace.Config.WorkspaceRoot, ReportFormat.Sarif);
+        using (var defaultDocument = System.Text.Json.JsonDocument.Parse(defaultText))
+        {
+            System.Text.Json.JsonElement defaultRun = defaultDocument.RootElement.GetProperty("runs")[0];
+            harness.Equal("by default only the reportable finding is in the log, so a consumer that ignores suppressions sees what --fail-on saw", 1, defaultRun.GetProperty("results").GetArrayLength());
+            harness.Equal("and it is new against the baseline", "new", defaultRun.GetProperty("results")[0].GetProperty("baselineState").GetString());
+        }
+
+        string text = Reporter.Render(result, registry, workspace.Config.WorkspaceRoot, ReportFormat.Sarif, includeBaselined: true);
         using var document = System.Text.Json.JsonDocument.Parse(text);
         System.Text.Json.JsonElement run = document.RootElement.GetProperty("runs")[0];
         System.Text.Json.JsonElement driver = run.GetProperty("tool").GetProperty("driver");
@@ -3214,7 +3222,7 @@ internal static class Program
         harness.Equal("and declares its default level", "warning", rule.GetProperty("defaultConfiguration").GetProperty("level").GetString());
 
         List<System.Text.Json.JsonElement> results = run.GetProperty("results").EnumerateArray().ToList();
-        harness.Equal("both findings are in the log", 2, results.Count);
+        harness.Equal("with --include-baselined both findings are in the log", 2, results.Count);
         harness.Equal("every result indexes its rule", true, results.All(r => r.GetProperty("ruleIndex").GetInt32() == 0));
         harness.Equal("the reportable finding is new against the baseline", "new", results[0].GetProperty("baselineState").GetString());
         harness.Equal("and carries no suppression", false, results[0].TryGetProperty("suppressions", out _));

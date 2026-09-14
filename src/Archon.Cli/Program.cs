@@ -119,6 +119,8 @@ internal static class Program
               --format <name>     console (default), json, sarif or github.
               --fail-on <level>   error (default), warning, information, hint or never.
               --no-baseline       Ignore the baseline file and report every finding.
+              --include-baselined With --format sarif, also emit baselined findings as suppressed
+                                   results, for a viewer that honours SARIF suppressions.
               --output <file>     Write the report to a file instead of standard output.
               --since <ref>       Report only findings on lines changed since the merge base
                                    with <ref>, e.g. origin/main. Needs a git repository.
@@ -189,7 +191,7 @@ internal static class Program
             return ExitUsage;
         }
 
-        string report = Reporter.Render(result, session.Engine.Registry, session.Config.WorkspaceRoot, options.Format);
+        string report = Reporter.Render(result, session.Engine.Registry, session.Config.WorkspaceRoot, options.Format, options.IncludeBaselined);
 
         if (options.OutputPath is not null)
         {
@@ -1075,6 +1077,9 @@ internal static class Program
 
         public bool UseBaseline { get; private init; } = true;
 
+        /// <summary>Emit baselined findings in a SARIF report too, as suppressed results.</summary>
+        public bool IncludeBaselined { get; private init; }
+
         public string? OutputPath { get; private init; }
 
         /// <summary>Permits <c>init</c> to overwrite a configuration file that is already there.</summary>
@@ -1105,6 +1110,9 @@ internal static class Program
                         break;
                     case "--no-baseline":
                         options = options with { UseBaseline = false };
+                        break;
+                    case "--include-baselined":
+                        options = options with { IncludeBaselined = true };
                         break;
                     case "--force":
                         options = options with { Force = true };

@@ -99,7 +99,7 @@ archon --version           Print the version.
 ```
 
 `check` takes `--format console|json|sarif|github`, `--fail-on error|warning|information|hint|never`,
-`--no-baseline`, `--output <file>`, `--since <ref>` and `--fix`. `baseline` takes `--prune`, which
+`--no-baseline`, `--include-baselined`, `--output <file>`, `--since <ref>` and `--fix`. `baseline` takes `--prune`, which
 drops entries that no longer match instead of re-recording everything. `format` takes `--check`, which reports which files would
 change without writing them and exits `3` if any would — the same contract the standalone
 `sqlfmt-tsql` tool this was folded in from uses, so a CI step written against that tool needs no
@@ -131,11 +131,12 @@ when the command could not run. A pipeline step is usually:
 archon check . --format sarif --output archon.sarif --fail-on error
 ```
 
-The SARIF log includes baselined findings as well as new ones, each marked with its
-`baselineState` (`new` or `unchanged`) and, for a baselined one, an external suppression naming the
-baseline. A code-scanning consumer that tracks alerts across uploads then sees accepted debt as
-accepted rather than as fixed one run and new the next; the `--fail-on` decision still counts only
-the new ones. Each built-in rule links back to the table under [Rules](#rules).
+The SARIF log holds the findings `--fail-on` judged and nothing else, so a code-scanning consumer
+shows the same picture the exit code gave. GitHub Code Scanning in particular ignores SARIF
+`suppressions`, and would raise every baselined finding as an open alert if they were in the log.
+`--include-baselined` adds them anyway, each marked `baselineState: unchanged` with an external
+suppression naming the baseline, for a viewer that honours suppressions and tracks accepted debt
+across uploads. Each built-in rule links back to the table under [Rules](#rules).
 
 ### Checking only what a branch changed
 
