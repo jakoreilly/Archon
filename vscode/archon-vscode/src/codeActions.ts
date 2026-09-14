@@ -1,17 +1,18 @@
 import * as vscode from 'vscode';
+import { FindingInfo } from './client';
 import { ruleIdOf } from './diagnosticCode';
 
-const COUNT_TO_ANY = 'AR0020';
-const REDUNDANT_MATERIALISATION = 'AR0022';
-
 /**
- * Quick fixes for the two AR0020/AR0022 shapes that can be rewritten from their diagnostic text
- * alone, with no symbol resolution: the engine is syntax-only, so a fix is offered only where the
- * rule's own detection already guarantees the rewrite is safe, and withheld otherwise rather than
- * guessed at.
+ * Quick fixes for findings whose rule supplied a rewrite. The rewrite is decided by the engine
+ * alongside the detection — a rule offers one only where what it matched already guarantees the
+ * edit is safe — so this provider has nothing to work out: it turns the finding's edits into a
+ * WorkspaceEdit. The same fix is what `archon check --fix` applies on the command line, which is
+ * how a quick fix taken in the editor and a fix applied in CI cannot disagree.
  */
-export class PerfHintCodeActionProvider implements vscode.CodeActionProvider {
+export class FixCodeActionProvider implements vscode.CodeActionProvider {
   public static readonly providedCodeActionKinds = [vscode.CodeActionKind.QuickFix];
+
+  constructor(private readonly findingsFor: (uri: vscode.Uri) => FindingInfo[]) {}
 
   public provideCodeActions(
     document: vscode.TextDocument,
@@ -19,82 +20,53 @@ export class PerfHintCodeActionProvider implements vscode.CodeActionProvider {
     context: vscode.CodeActionContext
   ): vscode.CodeAction[] {
     const actions: vscode.CodeAction[] = [];
+    const findings = this.findingsFor(document.uri);
     for (const diagnostic of context.diagnostics) {
       if (diagnostic.source !== 'archon') {
         continue;
       }
-      const action = this.actionFor(document, diagnostic);
-      if (action) {
-        actions.push(action);
+      const finding = findingFor(diagnostic, findings);
+      if (!finding?.fix) {
+        continue;
       }
+      actions.push(buildAction(document, diagnostic, finding.fix.title, finding.fix.edits));
     }
     return actions;
-  }
-
-  private actionFor(document: vscode.TextDocument, diagnostic: vscode.Diagnostic): vscode.CodeAction | undefined {
-    switch (ruleIdOf(diagnostic)) {
-      case COUNT_TO_ANY:
-        return this.fixCountToAny(document, diagnostic);
-      case REDUNDANT_MATERIALISATION:
-        return this.fixRedundantMaterialisation(document, diagnostic);
-      default:
-        return undefined;
-    }
-  }
-
-  private fixCountToAny(document: vscode.TextDocument, diagnostic: vscode.Diagnostic): vscode.CodeAction | undefined {
-    const text = document.getText(diagnostic.range);
-    const negate = diagnostic.message.includes("'!sequence.Any()'");
-    const replacement = countToAnyReplacement(text, negate);
-    if (replacement === undefined) {
-      return undefined;
-    }
-    return this.buildAction(
-      document,
-      diagnostic,
-      `Replace with '${negate ? '!' : ''}...Any()'`,
-      replacement
-    );
-  }
-
-  private fixRedundantMaterialisation(document: vscode.TextDocument, diagnostic: vscode.Diagnostic): vscode.CodeAction | undefined {
-    const text = document.getText(diagnostic.range);
-    const match = /\.(ToList|ToArray)\(\)/.exec(text);
-    if (!match) {
-      return undefined;
-    }
-    const replacement = text.slice(0, match.index) + text.slice(match.index + match[0].length);
-    return this.buildAction(document, diagnostic, `Drop '.${match[1]}()'`, replacement);
-  }
-
-  private buildAction(
-    document: vscode.TextDocument,
-    diagnostic: vscode.Diagnostic,
-    title: string,
-    replacement: string
-  ): vscode.CodeAction {
-    const action = new vscode.CodeAction(title, vscode.CodeActionKind.QuickFix);
-    action.edit = new vscode.WorkspaceEdit();
-    action.edit.replace(document.uri, diagnostic.range, replacement);
-    action.diagnostics = [diagnostic];
-    action.isPreferred = true;
-    return action;
   }
 }
 
 /**
- * Handles only `target.Count() <op> literal` and its reverse. Anything else AR0020 might one day
- * match (a member access rather than an invocation, say) is left without a fix rather than risking
- * a rewrite this text-only pass cannot verify.
+ * Recovers the finding a diagnostic was raised from. A diagnostic carries no reference back, so
+ * the match is on what both share: rule id, start position and message. Two findings of one rule
+ * with the same message at the same position are the same finding.
  */
-function countToAnyReplacement(text: string, negate: boolean): string | undefined {
-  const forward = /^([\s\S]*)\.Count\(\)\s*(?:==|!=|>=|<=|>|<)\s*\d+$/.exec(text);
-  if (forward) {
-    return (negate ? '!' : '') + forward[1] + '.Any()';
+export function findingFor(diagnostic: vscode.Diagnostic, findings: FindingInfo[]): FindingInfo | undefined {
+  const ruleId = ruleIdOf(diagnostic);
+  return findings.find(
+    (f) =>
+      f.ruleId === ruleId &&
+      f.startLine === diagnostic.range.start.line &&
+      f.startColumn === diagnostic.range.start.character &&
+      f.message === diagnostic.message
+  );
+}
+
+function buildAction(
+  document: vscode.TextDocument,
+  diagnostic: vscode.Diagnostic,
+  title: string,
+  edits: { startLine: number; startColumn: number; endLine: number; endColumn: number; newText: string }[]
+): vscode.CodeAction {
+  const action = new vscode.CodeAction(title, vscode.CodeActionKind.QuickFix);
+  action.edit = new vscode.WorkspaceEdit();
+  for (const edit of edits) {
+    action.edit.replace(
+      document.uri,
+      new vscode.Range(edit.startLine, edit.startColumn, edit.endLine, edit.endColumn),
+      edit.newText
+    );
   }
-  const reversed = /^\d+\s*(?:==|!=|>=|<=|>|<)\s*([\s\S]*)\.Count\(\)$/.exec(text);
-  if (reversed) {
-    return (negate ? '!' : '') + reversed[1] + '.Any()';
-  }
-  return undefined;
+  action.diagnostics = [diagnostic];
+  action.isPreferred = true;
+  return action;
 }

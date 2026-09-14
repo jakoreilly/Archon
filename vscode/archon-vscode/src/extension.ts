@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import { upsertRuleSeverity } from './archonConfigEdit';
 import { AnalysisReply, ArchonClient, FindingInfo, MethodImpactInfo, RuleInfo } from './client';
 import { SqlFormattingEditProvider } from './formatting';
-import { PerfHintCodeActionProvider } from './codeActions';
+import { FixCodeActionProvider } from './codeActions';
 import { DiffHunk } from './diff';
 import { FocusLensProvider, FocusMode } from './focus';
 import { forgetRepositoryRoots } from './git';
@@ -101,9 +101,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.languages.registerHoverProvider({ scheme: 'file' }, history),
     vscode.languages.registerDocumentFormattingEditProvider({ language: 'sql', scheme: 'file' }, formatting),
     vscode.languages.registerCodeActionsProvider(
-      { language: 'csharp', scheme: 'file' },
-      new PerfHintCodeActionProvider(),
-      { providedCodeActionKinds: PerfHintCodeActionProvider.providedCodeActionKinds }
+      [
+        { language: 'csharp', scheme: 'file' },
+        { language: 'sql', scheme: 'file' }
+      ],
+      new FixCodeActionProvider((uri) => findingsByFile.get(uri.fsPath) ?? []),
+      { providedCodeActionKinds: FixCodeActionProvider.providedCodeActionKinds }
     ),
     vscode.languages.registerCodeActionsProvider(
       [
@@ -646,7 +649,8 @@ async function analyzeWorkspace(): Promise<void> {
         reportSkipped(reply);
         log(
           `workspace pass: ${reply.findings.length} finding(s) across ${reply.filesAnalysed} file(s) in ${reply.elapsedMilliseconds} ms` +
-            (reply.baselinedCount > 0 ? `, ${reply.baselinedCount} baselined and not counted` : '')
+            (reply.baselinedCount > 0 ? `, ${reply.baselinedCount} baselined and not counted` : '') +
+            (reply.staleBaselineCount ? `, ${reply.staleBaselineCount} stale baseline entrie(s)` : '')
         );
       } catch (error) {
         log(`workspace analysis failed: ${describe(error)}`);

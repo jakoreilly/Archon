@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Quick fixes come from the engine. A finding whose rule is certain of the rewrite now carries it,
+  and the editor applies that rather than re-deriving one from the diagnostic's message text. The
+  same fix is what `archon check --fix` applies, so the two cannot disagree. Fixes are offered for
+  `AR0014`, `AR0015`, `AR0020`, `AR0022`, `AR0090` and — new to the editor — `SQ0021` in SQL files.
+- The workspace pass logs how many baseline entries no longer match anything, so a baseline that
+  has outlived its findings is noticed; `archon baseline --prune` drops them.
+- Fewer false positives: `AR0070` no longer flags an unused parameter on a public method of a type
+  that lists an interface, and `AR0075` no longer flags public fields on a private nested class.
+- `.archon.json` may carry `overrides`: blocks of rule severities and options applied only to files
+  matching their globs. The host resolves each finding's severity against its own path, so a rule
+  switched off for `tests/**` is silent there and reported everywhere else.
+
 ## 0.2.1
 
 - Documents writing your own rules. `rulePacks` was mentioned in passing and nowhere explained, so
