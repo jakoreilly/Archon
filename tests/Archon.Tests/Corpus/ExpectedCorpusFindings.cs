@@ -26,17 +26,10 @@ internal static class ExpectedCorpusFindings
             ["PUB-TEST-03-0"] = new Dictionary<string, int> { ["AR0011"] = 1 },
             ["PUB-TEST-06-0"] = new Dictionary<string, int> { ["AR0011"] = 1 },
 
-            // 'Execute' implements Quartz's IJob.Execute(IJobExecutionContext) — a fixed interface
-            // signature — but AsyncContractRule's SVC0020 only exempts an override, an explicit
-            // interface implementation named 'I...', an HTTP/test attribute or an event-handler
-            // shape; an implicit implementation of a third-party interface is a "cannot always be
-            // told from syntax alone" limitation of that sample pack (the built-in AR0070 now
-            // reads the base list for it, which the sample rule could adopt in the same way).
-            ["PUB-JOB-03-0"] = new Dictionary<string, int> { ["SVC0020"] = 1 },
-
-            // 'Consume' implements MassTransit's IConsumer<T>.Consume(ConsumeContext<T>) — the
-            // same implicit-interface-implementation limitation as PUB-JOB-03 above.
-            ["PUB-MSG-01-0"] = new Dictionary<string, int> { ["SVC0020"] = 1 },
+            // PUB-JOB-03's 'Execute' (Quartz's IJob) and PUB-MSG-01's 'Consume' (MassTransit's
+            // IConsumer<T>) are no longer expected under SVC0020: like AR0070, the sample rule now
+            // reads the base list and leaves a public instance method of a type listing an 'I...'
+            // type alone, since an implicit implementation has the interface's name, not its own.
         };
 
     /// <summary>Snippet ids whose block is bare statements, where method-shaped rules are blind.</summary>

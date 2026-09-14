@@ -94,11 +94,14 @@ public sealed class AsyncContractRule : IRule
 
     /// <summary>
     /// Signatures that are not the method's own to change: the entry point, an override, a member
-    /// of an interface named by convention (starting with 'I'), an ASP.NET Core action method
-    /// (an `[Http*]` routing attribute), a test framework's own method (`[Test]`/`[TestCase]`/
-    /// `[Theory]`/`[Fact]` — PUB-TEST-06's own naming convention, "Method_WhenCondition_
-    /// ExpectedResult", is the whole point of that snippet), or the (object, EventArgs) shape
-    /// AsyncSafetyRule already recognises for the same reason.
+    /// of an interface named by convention (starting with 'I'), a public instance method of a type
+    /// whose base list names such an interface (an implicit implementation of <c>IJob.Execute</c>
+    /// or <c>IConsumer&lt;T&gt;.Consume</c> cannot be told from a neighbour without symbols, so
+    /// both are left alone), an ASP.NET Core action method (an `[Http*]` routing attribute), a
+    /// test framework's own method (`[Test]`/`[TestCase]`/`[Theory]`/`[Fact]` — PUB-TEST-06's own
+    /// naming convention, "Method_WhenCondition_ExpectedResult", is the whole point of that
+    /// snippet), or the (object, EventArgs) shape AsyncSafetyRule already recognises for the same
+    /// reason.
     /// </summary>
     private static bool IsExempt(MethodDeclarationSyntax method)
     {
@@ -115,11 +118,50 @@ public sealed class AsyncContractRule : IRule
         {
             return true;
         }
+        if (MayImplementInterface(method))
+        {
+            return true;
+        }
         if (HasAttributeNamed(method, HttpVerbAttributes) || HasAttributeNamed(method, TestMethodAttributes))
         {
             return true;
         }
         return LooksLikeEventHandler(method);
+    }
+
+    /// <summary>
+    /// Whether the method could be an implicit interface implementation, whose name the interface
+    /// dictates: a public instance method on a type whose base list names something spelled like
+    /// an interface ('I' followed by a capital, the .NET convention). The same test the built-in
+    /// AR0070 applies, copied because this pack cannot reference that assembly.
+    /// </summary>
+    private static bool MayImplementInterface(MethodDeclarationSyntax method)
+    {
+        if (method.Parent is not TypeDeclarationSyntax { BaseList: { } baseList })
+        {
+            return false;
+        }
+        if (!method.Modifiers.Any(SyntaxKind.PublicKeyword) || method.Modifiers.Any(SyntaxKind.StaticKeyword))
+        {
+            return false;
+        }
+        return baseList.Types.Any(t => LooksLikeInterface(SimpleTypeName(t.Type.ToString())));
+    }
+
+    private static bool LooksLikeInterface(string name) =>
+        name.Length >= 2 && name[0] == 'I' && char.IsUpper(name[1]);
+
+    /// <summary>'Ns.IConsumer&lt;T&gt;' as 'IConsumer': the last segment without type arguments.</summary>
+    private static string SimpleTypeName(string typeText)
+    {
+        string trimmed = typeText.Trim();
+        int generic = trimmed.IndexOf('<');
+        if (generic >= 0)
+        {
+            trimmed = trimmed[..generic];
+        }
+        int dot = trimmed.LastIndexOf('.');
+        return dot >= 0 ? trimmed[(dot + 1)..] : trimmed;
     }
 
     /// <summary>

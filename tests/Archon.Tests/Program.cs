@@ -2641,6 +2641,24 @@ internal static class Program
         harness.Equal("ignores a member of an interface named starting with 'I'", 0,
             interfaceMember.Analyse().Findings.CountOf(AsyncContractRule.MissingAsyncSuffix));
 
+        var implicitImplementation = new TestWorkspace(new ServiceConventionRulePack());
+        implicitImplementation.Add("a.cs",
+            "class C : Quartz.IJob { public async System.Threading.Tasks.Task Execute(IJobExecutionContext context) { await System.Threading.Tasks.Task.Delay(1); } }");
+        harness.Equal("ignores a public instance method of a type that lists an interface, which may implement it", 0,
+            implicitImplementation.Analyse().Findings.CountOf(AsyncContractRule.MissingAsyncSuffix));
+
+        var privateOnImplementer = new TestWorkspace(new ServiceConventionRulePack());
+        privateOnImplementer.Add("a.cs",
+            "class C : IJob { private async System.Threading.Tasks.Task Go() { await System.Threading.Tasks.Task.Delay(1); } }");
+        harness.Equal("still flags a private method on such a type, which cannot implement the interface", 1,
+            privateOnImplementer.Analyse().Findings.CountOf(AsyncContractRule.MissingAsyncSuffix));
+
+        var classBaseOnly = new TestWorkspace(new ServiceConventionRulePack());
+        classBaseOnly.Add("a.cs",
+            "class C : Base { public async System.Threading.Tasks.Task Go() { await System.Threading.Tasks.Task.Delay(1); } }");
+        harness.Equal("still flags a public method on a type whose only base is a class", 1,
+            classBaseOnly.Analyse().Findings.CountOf(AsyncContractRule.MissingAsyncSuffix));
+
         var eventHandler = new TestWorkspace(new ServiceConventionRulePack());
         eventHandler.Add("a.cs",
             "class C { async System.Threading.Tasks.Task OnClick(object sender, System.EventArgs e) { await System.Threading.Tasks.Task.Delay(1); } }");
