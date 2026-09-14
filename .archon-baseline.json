@@ -1,0 +1,356 @@
+[
+  {
+    "fingerprint": "29abd2d204083ae8",
+    "ruleId": "AR0060",
+    "file": "src/Archon.Cli/Program.cs",
+    "message": "\u0027RunFormat\u0027 has a cognitive complexity of 20, over the threshold of 15. Extract named helpers for its branches."
+  },
+  {
+    "fingerprint": "469d61869553c9af",
+    "ruleId": "AR0060",
+    "file": "src/Archon.Cli/Program.cs",
+    "message": "\u0027RunDebt\u0027 has a cognitive complexity of 31, over the threshold of 15. Extract named helpers for its branches."
+  },
+  {
+    "fingerprint": "561558feb5c53d63",
+    "ruleId": "AR0060",
+    "file": "src/Archon.Cli/Program.cs",
+    "message": "\u0027RunTrend\u0027 has a cognitive complexity of 26, over the threshold of 15. Extract named helpers for its branches."
+  },
+  {
+    "fingerprint": "69246c2d6241df3f",
+    "ruleId": "AR0060",
+    "file": "src/Archon.Cli/Program.cs",
+    "message": "\u0027RunHotspots\u0027 has a cognitive complexity of 22, over the threshold of 15. Extract named helpers for its branches."
+  },
+  {
+    "fingerprint": "0f4383906571deb5",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Core/Configuration/ConfigSchema.cs",
+    "message": "\u0022additionalProperties\u0022 appears 7 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "23ca6f5fcd7d8f55",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Core/Configuration/ConfigSchema.cs",
+    "message": "\u0022description\u0022 appears 19 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "30b96ddc7bd1cc37",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Core/Configuration/ConfigSchema.cs",
+    "message": "\u0022description\u0022 appears 19 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "3872a6a9cf689ed8",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Core/Configuration/ConfigSchema.cs",
+    "message": "\u0022description\u0022 appears 19 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "41575ff025c2235c",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Core/Configuration/ConfigSchema.cs",
+    "message": "\u0022description\u0022 appears 19 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "538cf563d7d7243d",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Core/Configuration/ConfigSchema.cs",
+    "message": "\u0022properties\u0022 appears 6 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "55c487d3d1dfc887",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Core/Configuration/ConfigSchema.cs",
+    "message": "\u0022additionalProperties\u0022 appears 7 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "5856846f01ede0ff",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Core/Configuration/ConfigSchema.cs",
+    "message": "\u0022description\u0022 appears 19 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "5b360eeb0ea579b7",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Core/Configuration/ConfigSchema.cs",
+    "message": "\u0022properties\u0022 appears 6 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "658a94a213b57901",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Core/Configuration/ConfigSchema.cs",
+    "message": "\u0022additionalProperties\u0022 appears 7 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "65e1fc5925d3b285",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Core/Configuration/ConfigSchema.cs",
+    "message": "\u0022description\u0022 appears 19 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "78bb2d60db0f4474",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Core/Configuration/ConfigSchema.cs",
+    "message": "\u0022description\u0022 appears 19 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "8a90ea35551307d0",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Core/Configuration/ConfigSchema.cs",
+    "message": "\u0022description\u0022 appears 19 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "8c7fee2d4a02066a",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Core/Configuration/ConfigSchema.cs",
+    "message": "\u0022description\u0022 appears 19 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "919cfbc4ddb13315",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Core/Configuration/ConfigSchema.cs",
+    "message": "\u0022description\u0022 appears 19 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "9995954b1c8d6e26",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Core/Configuration/ConfigSchema.cs",
+    "message": "\u0022description\u0022 appears 19 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "a63a4d3ce3009401",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Core/Configuration/ConfigSchema.cs",
+    "message": "\u0022description\u0022 appears 19 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "aa594ddaa8254547",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Core/Configuration/ConfigSchema.cs",
+    "message": "\u0022additionalProperties\u0022 appears 7 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "b09fb860847663e3",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Core/Configuration/ConfigSchema.cs",
+    "message": "\u0022description\u0022 appears 19 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "cae4d121db3207f5",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Core/Configuration/ConfigSchema.cs",
+    "message": "\u0022description\u0022 appears 19 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "db2167193938942a",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Core/Configuration/ConfigSchema.cs",
+    "message": "\u0022description\u0022 appears 19 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "dcd5c627b65c9a67",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Core/Configuration/ConfigSchema.cs",
+    "message": "\u0022description\u0022 appears 19 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "dd4d19ca34fddef0",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Core/Configuration/ConfigSchema.cs",
+    "message": "\u0022additionalProperties\u0022 appears 7 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "dd9f9707980ed854",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Core/Configuration/ConfigSchema.cs",
+    "message": "\u0022description\u0022 appears 19 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "de1a19a0fd66f385",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Core/Configuration/ConfigSchema.cs",
+    "message": "\u0022properties\u0022 appears 6 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "dfe86ea66839a210",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Core/Configuration/ConfigSchema.cs",
+    "message": "\u0022properties\u0022 appears 6 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "fc3e386475bbf1c7",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Core/Configuration/ConfigSchema.cs",
+    "message": "\u0022properties\u0022 appears 6 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "fd7b3351c9e0bcdc",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Core/Configuration/ConfigSchema.cs",
+    "message": "\u0022additionalProperties\u0022 appears 7 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "ff8b80ca9bc7e2e4",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Core/Configuration/ConfigSchema.cs",
+    "message": "\u0022description\u0022 appears 19 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "58931882824dc9dc",
+    "ruleId": "AR0060",
+    "file": "src/Archon.Core/Configuration/ConfigValidator.cs",
+    "message": "\u0027ValidateLayers\u0027 has a cognitive complexity of 16, over the threshold of 15. Extract named helpers for its branches."
+  },
+  {
+    "fingerprint": "b52a3be03af2677f",
+    "ruleId": "AR0060",
+    "file": "src/Archon.Core/Insights/CallGraph.cs",
+    "message": "\u0027Trace\u0027 has a cognitive complexity of 22, over the threshold of 15. Extract named helpers for its branches."
+  },
+  {
+    "fingerprint": "1eb3be10f9897ddc",
+    "ruleId": "AR0060",
+    "file": "src/Archon.Core/Sources/WorkspaceModel.cs",
+    "message": "\u0027ToRegex\u0027 has a cognitive complexity of 19, over the threshold of 15. Extract named helpers for its branches."
+  },
+  {
+    "fingerprint": "7abe4d7b4690261b",
+    "ruleId": "AR0060",
+    "file": "src/Archon.Core/Sources/WorkspaceModel.cs",
+    "message": "\u0027BuildProjects\u0027 has a cognitive complexity of 17, over the threshold of 15. Extract named helpers for its branches."
+  },
+  {
+    "fingerprint": "bacf75c643e9bd3f",
+    "ruleId": "AR0060",
+    "file": "src/Archon.Core/Sources/WorkspaceModel.cs",
+    "message": "\u0027Discover\u0027 has a cognitive complexity of 17, over the threshold of 15. Extract named helpers for its branches."
+  },
+  {
+    "fingerprint": "0c2e1882316a7613",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Host/Program.cs",
+    "message": "\u0022elapsedMilliseconds\u0022 appears 4 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "a30cb22aa6ce9736",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Host/Program.cs",
+    "message": "\u0022elapsedMilliseconds\u0022 appears 4 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "f2de45ca5c884cf8",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Host/Program.cs",
+    "message": "\u0022elapsedMilliseconds\u0022 appears 4 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "13df8b41035b213c",
+    "ruleId": "AR0060",
+    "file": "src/Archon.Rules/CSharp/AsyncSafetyRule.cs",
+    "message": "\u0027FindBlocking\u0027 has a cognitive complexity of 33, over the threshold of 15. Extract named helpers for its branches."
+  },
+  {
+    "fingerprint": "a1d91709ca28185f",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Rules/CSharp/AsyncSafetyRule.cs",
+    "message": "\u0022BlockingOnTask\u0022 appears 3 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "d36620623de82726",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Rules/CSharp/AsyncSafetyRule.cs",
+    "message": "\u0022BlockingOnTask\u0022 appears 3 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "c4dd4d3c2e18d169",
+    "ruleId": "AR0060",
+    "file": "src/Archon.Rules/CSharp/CaptiveDependencyRule.cs",
+    "message": "\u0027Analyze\u0027 has a cognitive complexity of 29, over the threshold of 15. Extract named helpers for its branches."
+  },
+  {
+    "fingerprint": "e158e774a81913f5",
+    "ruleId": "AR0060",
+    "file": "src/Archon.Rules/CSharp/ConfigKeyRule.cs",
+    "message": "\u0027Analyze\u0027 has a cognitive complexity of 18, over the threshold of 15. Extract named helpers for its branches."
+  },
+  {
+    "fingerprint": "fd1ed57f4550e019",
+    "ruleId": "AR0060",
+    "file": "src/Archon.Rules/CSharp/ConfigKeyRule.cs",
+    "message": "\u0027ExtractUsages\u0027 has a cognitive complexity of 17, over the threshold of 15. Extract named helpers for its branches."
+  },
+  {
+    "fingerprint": "309be647806024cb",
+    "ruleId": "AR0060",
+    "file": "src/Archon.Rules/CSharp/DisposalRule.cs",
+    "message": "\u0027IsHandledOrEscapes\u0027 has a cognitive complexity of 17, over the threshold of 15. Extract named helpers for its branches."
+  },
+  {
+    "fingerprint": "e7b8e85307a2c1d3",
+    "ruleId": "AR0060",
+    "file": "src/Archon.Rules/CSharp/DisposalRule.cs",
+    "message": "\u0027FindUndisposedLocals\u0027 has a cognitive complexity of 17, over the threshold of 15. Extract named helpers for its branches."
+  },
+  {
+    "fingerprint": "390f9477bb8ab6b9",
+    "ruleId": "AR0060",
+    "file": "src/Archon.Rules/CSharp/LayerDependencyRule.cs",
+    "message": "\u0027Analyze\u0027 has a cognitive complexity of 28, over the threshold of 15. Extract named helpers for its branches."
+  },
+  {
+    "fingerprint": "3b17f7dddb45fbb8",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Rules/CSharp/LogicHygieneRule.cs",
+    "message": "\u0022AlwaysTrueOrFalseCondition\u0022 appears 3 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "4d5c0c0eab3b7315",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Rules/CSharp/LogicHygieneRule.cs",
+    "message": "\u0022AlwaysTrueOrFalseCondition\u0022 appears 3 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "5515961fd8aadb0b",
+    "ruleId": "AR0060",
+    "file": "src/Archon.Rules/CSharp/ProjectCycleRule.cs",
+    "message": "\u0027StronglyConnectedComponents\u0027 has a cognitive complexity of 32, over the threshold of 15. Extract named helpers for its branches."
+  },
+  {
+    "fingerprint": "705bcef70d3a0448",
+    "ruleId": "AR0060",
+    "file": "src/Archon.Rules/CSharp/ProjectCycleRule.cs",
+    "message": "\u0027Analyze\u0027 has a cognitive complexity of 18, over the threshold of 15. Extract named helpers for its branches."
+  },
+  {
+    "fingerprint": "c7289afaf08395d7",
+    "ruleId": "AR0060",
+    "file": "src/Archon.Rules/CSharp/SchemaAwareSqlRule.cs",
+    "message": "\u0027Analyze\u0027 has a cognitive complexity of 16, over the threshold of 15. Extract named helpers for its branches."
+  },
+  {
+    "fingerprint": "b7e1a1fdd7e2d1d1",
+    "ruleId": "AR0060",
+    "file": "src/Archon.Rules/CSharp/SecurityHotspotRule.cs",
+    "message": "\u0027FindSqlInjectionRisk\u0027 has a cognitive complexity of 19, over the threshold of 15. Extract named helpers for its branches."
+  },
+  {
+    "fingerprint": "71c21836ca28705d",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Rules/CSharp/SecurityHotspotRule.cs",
+    "message": "\u0022SqlInjectionRisk\u0022 appears 3 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "b4148c1f9aaf54ef",
+    "ruleId": "AR0061",
+    "file": "src/Archon.Rules/CSharp/SecurityHotspotRule.cs",
+    "message": "\u0022SqlInjectionRisk\u0022 appears 3 times in this file; extract it to a single constant."
+  },
+  {
+    "fingerprint": "85726c7e0d55216f",
+    "ruleId": "AR0060",
+    "file": "src/Archon.Rules/CSharp/UnusedSymbolsRule.cs",
+    "message": "\u0027FindUnusedLocals\u0027 has a cognitive complexity of 16, over the threshold of 15. Extract named helpers for its branches."
+  }
+]

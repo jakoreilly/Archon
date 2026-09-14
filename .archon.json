@@ -1,0 +1,21 @@
+{
+  "$schema": ".archon.schema.json",
+  "exclude": [
+    "tests/fixtures/**",
+    "tests/Archon.Tests/Corpus/Format/**",
+    "samples/example/**",
+    "samples/conventions-example/**",
+    "vscode/**"
+  ],
+  "overrides": [
+    {
+      "files": ["src/Archon.Cli/**", "src/Archon.Host/**", "tests/**"],
+      "rules": { "AR0073": "off" }
+    },
+    {
+      "files": ["tests/**"],
+      "rules": { "AR0023": "off", "AR0060": "off", "AR0061": "off", "AR0080": "off" }
+    }
+  ],
+  "baseline": ".archon-baseline.json"
+}

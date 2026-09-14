@@ -31,9 +31,6 @@ vscode/archon-vscode/host/
 vscode/archon-vscode/media/
 *.vsix
 
-# Archon's own accepted-findings file, which is per-checkout
-.archon-baseline.json
-
 # Working notes stay local. Only the published documents are tracked: the two
 # READMEs and the extension changelog the marketplace renders.
 *.md
