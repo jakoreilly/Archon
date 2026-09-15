@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Archon.Core.Findings;
+using Archon.Core.Sources;
 
 namespace Archon.Core.Configuration;
 
@@ -31,6 +32,36 @@ public sealed class LayerEdge
 }
 
 /// <summary>
+/// Settings that apply only to files matching a set of globs, layered over the top-level ones.
+/// A test project legitimately writes to the console and repeats string literals; a generated
+/// folder should not be held to a complexity threshold. Without this the only options were to
+/// switch a rule off everywhere or to exclude the files from every rule, and both throw away
+/// findings that were wanted.
+/// </summary>
+public sealed class ConfigOverride
+{
+    private GlobMatcher? _matcher;
+
+    /// <summary>Path globs, relative to the workspace root, selecting the files this block applies to.</summary>
+    public List<string> Files { get; set; } = new();
+
+    /// <summary>Rule id or category to severity, exactly as the top-level <c>rules</c> map.</summary>
+    public Dictionary<string, string> Rules { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Per-rule option objects replacing the top-level entry for matching files.</summary>
+    public Dictionary<string, JsonElement> Options { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Whether a workspace-relative, forward-slash path is selected by <see cref="Files"/>.</summary>
+    public bool Matches(string relativePath)
+    {
+        // Built on first use rather than at load, because the loader is deserialization and cannot
+        // run code; built once, because this is consulted for every finding of every pass.
+        _matcher ??= new GlobMatcher(Files);
+        return _matcher.IsExcluded(relativePath);
+    }
+}
+
+/// <summary>
 /// The one configuration document for every surface. The editor, the command line and any other
 /// host read the same file, so a finding reported in one place is reported identically in the
 /// others; that equivalence is what makes the results trustworthy enough to gate a build on.
@@ -50,6 +81,12 @@ public sealed class ArchonConfig
 
     /// <summary>Per-rule option objects, keyed by rule id.</summary>
     public Dictionary<string, JsonElement> Options { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Path-scoped settings, applied in order so that a later block wins over an earlier one where
+    /// both match the same file.
+    /// </summary>
+    public List<ConfigOverride> Overrides { get; set; } = new();
 
     /// <summary>Baseline file path relative to the workspace root.</summary>
     public string Baseline { get; set; } = ".archon-baseline.json";
@@ -85,28 +122,97 @@ public sealed class ArchonConfig
     public static readonly string[] SeverityNames = { "error", "warning", "information", "hint", "off" };
 
     /// <summary>
-    /// Resolves a rule's effective severity. Precedence is session override, then an explicit
-    /// rule-id entry, then a category-wide entry, then the rule's declared default.
+    /// Resolves a rule's effective severity outside any particular file. Precedence is session
+    /// override, then an explicit rule-id entry, then a category-wide entry, then the rule's
+    /// declared default.
     /// </summary>
-    public Severity SeverityFor(Rules.RuleDescriptor descriptor)
+    public Severity SeverityFor(Rules.RuleDescriptor descriptor) => SeverityFor(descriptor, relativePath: null);
+
+    /// <summary>
+    /// Resolves a rule's effective severity for one file. A session override wins outright; then
+    /// each matching <see cref="Overrides"/> block is consulted from last to first, its rule-id entry
+    /// before its category entry; then the top-level map the same way; then the declared default.
+    /// A block's category entry therefore beats a top-level rule-id entry — the block is the more
+    /// specific statement, having named the files — and within any one level an id beats a category.
+    /// </summary>
+    public Severity SeverityFor(Rules.RuleDescriptor descriptor, string? relativePath)
     {
         if (SessionOverrides.TryGetValue(descriptor.Id, out Severity session))
         {
             return session;
         }
-        if (Rules.TryGetValue(descriptor.Id, out string? byId) && TryParseSeverity(byId, out Severity fromId))
+        if (relativePath is not null)
         {
-            return fromId;
+            string normalized = relativePath.Replace('\\', '/');
+            for (int i = Overrides.Count - 1; i >= 0; i--)
+            {
+                if (Overrides[i].Matches(normalized) && TryResolve(Overrides[i].Rules, descriptor, out Severity fromOverride))
+                {
+                    return fromOverride;
+                }
+            }
         }
-        if (Rules.TryGetValue(descriptor.Category, out string? byCategory) && TryParseSeverity(byCategory, out Severity fromCategory))
-        {
-            return fromCategory;
-        }
-        return descriptor.DefaultSeverity;
+        return TryResolve(Rules, descriptor, out Severity fromRules) ? fromRules : descriptor.DefaultSeverity;
     }
 
-    public JsonElement? OptionFor(string ruleId) =>
-        Options.TryGetValue(ruleId, out JsonElement element) ? element : null;
+    /// <summary>
+    /// Whether any file could see this rule at a level other than off. A rule switched off at the
+    /// top level but on for one folder still has to run; a rule off everywhere can be skipped
+    /// before it costs anything.
+    /// </summary>
+    public bool IsEnabledAnywhere(Rules.RuleDescriptor descriptor)
+    {
+        if (SeverityFor(descriptor) != Severity.Off)
+        {
+            return true;
+        }
+        if (SessionOverrides.ContainsKey(descriptor.Id))
+        {
+            return false;
+        }
+        return Overrides.Any(o => TryResolve(o.Rules, descriptor, out Severity severity) && severity != Severity.Off);
+    }
+
+    private static bool TryResolve(Dictionary<string, string> rules, Rules.RuleDescriptor descriptor, out Severity severity)
+    {
+        if (rules.TryGetValue(descriptor.Id, out string? byId) && TryParseSeverity(byId, out severity))
+        {
+            return true;
+        }
+        if (rules.TryGetValue(descriptor.Category, out string? byCategory) && TryParseSeverity(byCategory, out severity))
+        {
+            return true;
+        }
+        severity = Severity.Off;
+        return false;
+    }
+
+    public JsonElement? OptionFor(string ruleId) => OptionFor(ruleId, relativePath: null);
+
+    /// <summary>
+    /// The options a rule reads for one file: the last matching override block that carries an
+    /// entry for the rule, else the top-level entry, else nothing. A block replaces the entry whole
+    /// rather than merging keys into it, so what a rule reads is always something someone wrote.
+    /// </summary>
+    public JsonElement? OptionFor(string ruleId, string? relativePath)
+    {
+        if (relativePath is not null)
+        {
+            string normalized = relativePath.Replace('\\', '/');
+            for (int i = Overrides.Count - 1; i >= 0; i--)
+            {
+                if (Overrides[i].Matches(normalized) && Overrides[i].Options.TryGetValue(ruleId, out JsonElement fromOverride))
+                {
+                    return fromOverride;
+                }
+            }
+        }
+        return Options.TryGetValue(ruleId, out JsonElement element) ? element : null;
+    }
+
+    /// <summary>The workspace-relative, forward-slash form of a path, as override globs are written.</summary>
+    public string RelativePathOf(string filePath) =>
+        Fingerprint.ToRelative(filePath, WorkspaceRoot).Replace('\\', '/');
 
     public static bool TryParseSeverity(string? text, out Severity severity)
     {

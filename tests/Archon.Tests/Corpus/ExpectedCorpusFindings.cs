@@ -15,13 +15,9 @@ internal static class ExpectedCorpusFindings
             // would be read by the caller in real code, but nothing after it exists in this block.
             ["PUB-DATA-06-0"] = new Dictionary<string, int> { ["AR0071"] = 1 },
 
-            // 'cancellationToken' implements IHostedService.StopAsync, but the parameter is
-            // unused because the service has nothing to do on shutdown. UnusedSymbolsRule only
-            // exempts an override, an explicit interface implementation or an event-handler
-            // shape (UnusedSymbolsRule.cs:104) — an implicit interface implementation like this
-            // one is not syntactically distinguishable from an ordinary method, by the rule's own
-            // documented design ("cannot always be told from syntax alone").
-            ["PUB-JOB-01-0"] = new Dictionary<string, int> { ["AR0070"] = 1 },
+            // PUB-JOB-01's unused 'cancellationToken' on IHostedService.StopAsync is no longer
+            // expected: AR0070 exempts a public instance method on a type whose base list names
+            // an 'I...' type, so an implicit implementation is left alone as an explicit one is.
 
             // Moq's fluent '.ReturnsAsync(...)' is a same-line continuation of '.Setup(...)' and
             // returns the mock's setup object, not a task — but AsyncSafetyRule decides
@@ -30,17 +26,10 @@ internal static class ExpectedCorpusFindings
             ["PUB-TEST-03-0"] = new Dictionary<string, int> { ["AR0011"] = 1 },
             ["PUB-TEST-06-0"] = new Dictionary<string, int> { ["AR0011"] = 1 },
 
-            // 'Execute' implements Quartz's IJob.Execute(IJobExecutionContext) — a fixed interface
-            // signature — but AsyncContractRule's SVC0020 only exempts an override, an explicit
-            // interface implementation named 'I...', an HTTP/test attribute or an event-handler
-            // shape; an implicit implementation of a third-party interface is the same "cannot
-            // always be told from syntax alone" limitation AR0070 already accepts (see PUB-JOB-01
-            // in Phase 2).
-            ["PUB-JOB-03-0"] = new Dictionary<string, int> { ["SVC0020"] = 1 },
-
-            // 'Consume' implements MassTransit's IConsumer<T>.Consume(ConsumeContext<T>) — the
-            // same implicit-interface-implementation limitation as PUB-JOB-03 above.
-            ["PUB-MSG-01-0"] = new Dictionary<string, int> { ["SVC0020"] = 1 },
+            // PUB-JOB-03's 'Execute' (Quartz's IJob) and PUB-MSG-01's 'Consume' (MassTransit's
+            // IConsumer<T>) are no longer expected under SVC0020: like AR0070, the sample rule now
+            // reads the base list and leaves a public instance method of a type listing an 'I...'
+            // type alone, since an implicit implementation has the interface's name, not its own.
         };
 
     /// <summary>Snippet ids whose block is bare statements, where method-shaped rules are blind.</summary>

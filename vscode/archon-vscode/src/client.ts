@@ -16,6 +16,20 @@ export interface RuleInfo {
   snippetWhy?: string;
 }
 
+export interface TextEditInfo {
+  startLine: number;
+  startColumn: number;
+  endLine: number;
+  endColumn: number;
+  newText: string;
+}
+
+/** A rewrite the rule is certain resolves the finding. Absent when the rule offers none. */
+export interface FixInfo {
+  title: string;
+  edits: TextEditInfo[];
+}
+
 export interface FindingInfo {
   ruleId: string;
   severity: string;
@@ -28,12 +42,15 @@ export interface FindingInfo {
   endLine: number;
   endColumn: number;
   fingerprint: string;
+  fix?: FixInfo | null;
 }
 
 export interface AnalysisReply {
   scope: string | null;
   findings: FindingInfo[];
   baselinedCount: number;
+  /** Baseline entries no finding matched. Absent from hosts that predate it. */
+  staleBaselineCount?: number;
   failedRules: { ruleId: string; reason: string }[];
   diagnostics: string[];
   filesAnalysed: number;

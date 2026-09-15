@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  security-events: write
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  ARCHON: src/Archon.Cli/bin/Release/net10.0/archon.dll
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The debt and trend commands read git history, and --since needs the base ref.
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Build
+        run: dotnet build Archon.slnx -c Release
+
+      - name: Engine and rule tests
+        run: dotnet tests/Archon.Tests/bin/Release/net10.0/archon-tests.dll
+
+      # Archon on Archon. The baseline holds accepted debt, so this fails only on a finding that
+      # is new since it was recorded — the same contract any adopting repository gets.
+      - name: Archon check (gate)
+        run: dotnet $ARCHON check . --fail-on warning
+
+      - name: Archon check (SARIF)
+        if: always()
+        run: dotnet $ARCHON check . --format sarif --output archon.sarif --fail-on never
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: archon.sarif
+          category: archon
+
+      # Findings inside this change only, annotated on the diff. Informational here: the gate
+      # above is the one that fails the build.
+      - name: Archon check (changed lines)
+        if: github.event_name == 'pull_request'
+        run: dotnet $ARCHON check . --since origin/${{ github.base_ref }} --format github --fail-on never
+
+      # Accepted findings must be revisited, not forgotten.
+      - name: Baseline age
+        run: dotnet $ARCHON debt . --fail-over 365d
+
+      # The committed schema is generated from the registered rules; a rule added without
+      # regenerating it would leave the editor completions describing the previous release.
+      - name: Schema is current
+        run: |
+          dotnet $ARCHON schema . --output .archon.schema.json
+          git diff --exit-code -- .archon.schema.json
+
+  extension:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: vscode/archon-vscode
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: vscode/archon-vscode/package-lock.json
+      - run: npm ci
+      - name: Parser tests
+        run: npm test

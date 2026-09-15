@@ -117,10 +117,39 @@ public sealed class SqlSafetyRule : IRule
                 {
                     string replacement = node.ComparisonType == BooleanComparisonType.Equals ? "IS NULL" : "IS NOT NULL";
                     Add(NullComparisonWithEqualityOperator, node.StartLine, node.StartColumn, "NullComparisonWithEqualityOperator",
-                        $"This comparison to NULL is always unknown, not true or false; use {replacement} instead.");
+                        $"This comparison to NULL is always unknown, not true or false; use {replacement} instead.",
+                        NullComparisonFix(node, replacement));
                 }
             }
             base.ExplicitVisit(node);
+        }
+
+        /// <summary>
+        /// Rewrites the whole comparison as '&lt;operand&gt; IS [NOT] NULL', whichever side the
+        /// literal was on. The operand's text is taken verbatim from the token stream, so a
+        /// bracketed or qualified name comes back exactly as it was written. The fix is withheld
+        /// when the comparison spans lines, since the reported span could not then be trusted.
+        /// </summary>
+        private static FindingFix? NullComparisonFix(BooleanComparisonExpression node, string replacement)
+        {
+            ScalarExpression operand = IsNullLiteral(node.FirstExpression) ? node.SecondExpression : node.FirstExpression;
+            IList<TSqlParserToken> tokens = node.ScriptTokenStream;
+            if (tokens is null || node.FirstTokenIndex < 0 || node.LastTokenIndex >= tokens.Count)
+            {
+                return null;
+            }
+            TSqlParserToken last = tokens[node.LastTokenIndex];
+            if (last.Line != node.StartLine)
+            {
+                return null;
+            }
+            string operandText = string.Concat(
+                Enumerable.Range(operand.FirstTokenIndex, operand.LastTokenIndex - operand.FirstTokenIndex + 1)
+                    .Select(i => tokens[i].Text));
+            var span = new SourceSpan(
+                node.StartLine - 1, node.StartColumn - 1,
+                last.Line - 1, last.Column - 1 + last.Text.Length);
+            return FindingFix.Replace($"Replace with '{operandText} {replacement}'", span, $"{operandText} {replacement}");
         }
 
         private static bool IsNullLiteral(ScalarExpression expression) => expression is NullLiteral;
@@ -130,7 +159,7 @@ public sealed class SqlSafetyRule : IRule
             target is NamedTableReference { SchemaObject.BaseIdentifier: { Value: { } name } } &&
             name.StartsWith('#');
 
-        private void Add(string ruleId, int startLine, int startColumn, string kind, string message)
+        private void Add(string ruleId, int startLine, int startColumn, string kind, string message, FindingFix? fix = null)
         {
             int line = Math.Max(0, startLine - 1);
             int column = Math.Max(0, startColumn - 1);
@@ -140,7 +169,8 @@ public sealed class SqlSafetyRule : IRule
                 FilePath = _filePath,
                 Kind = kind,
                 Span = new SourceSpan(line, column, line, column + 1),
-                Message = message
+                Message = message,
+                Fix = fix
             });
         }
     }

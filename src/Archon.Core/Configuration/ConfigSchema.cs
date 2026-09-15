@@ -28,7 +28,7 @@ public static class ConfigSchema
     /// <summary>The top-level keys a configuration file may contain, as the loader binds them.</summary>
     public static readonly string[] KnownKeys =
     {
-        "rules", "exclude", "layers", "rulePacks", "options", "baseline"
+        "rules", "exclude", "layers", "rulePacks", "options", "overrides", "baseline"
     };
 
     public static string Generate(RuleRegistry registry)
@@ -73,6 +73,7 @@ public static class ConfigSchema
                         + "relative to the workspace root. A pack that fails to load is reported and skipped."
                 },
                 ["options"] = OptionsProperty(registry),
+                ["overrides"] = OverridesProperty(registry),
                 ["baseline"] = new JsonObject
                 {
                     ["type"] = "string",
@@ -249,6 +250,38 @@ public static class ConfigSchema
             ["additionalProperties"] = new JsonObject { ["type"] = "object" }
         };
     }
+
+    /// <summary>
+    /// The <c>overrides</c> list. Each block repeats the <c>rules</c> and <c>options</c> shapes so an
+    /// editor offers the same completions inside a block as at the top level.
+    /// </summary>
+    private static JsonObject OverridesProperty(RuleRegistry registry) => new()
+    {
+        ["type"] = "array",
+        ["description"] =
+            "Settings applied only to files matching a block's globs, layered over the top-level "
+            + "ones. Later blocks win over earlier ones where both match a file; within a block a rule "
+            + "id wins over its category, and a block's category entry wins over a top-level rule id.",
+        ["items"] = new JsonObject
+        {
+            ["type"] = "object",
+            ["required"] = new JsonArray { "files" },
+            ["additionalProperties"] = false,
+            ["properties"] = new JsonObject
+            {
+                ["files"] = new JsonObject
+                {
+                    ["type"] = "array",
+                    ["minItems"] = 1,
+                    ["items"] = new JsonObject { ["type"] = "string" },
+                    ["description"] = "Path globs, relative to the workspace root, selecting the files this block applies to.",
+                    ["examples"] = new JsonArray { "tests/**", "**/*.Designer.cs" }
+                },
+                ["rules"] = RulesProperty(registry),
+                ["options"] = OptionsProperty(registry)
+            }
+        }
+    };
 
     private static JsonArray ToArray(IEnumerable<string> values)
     {

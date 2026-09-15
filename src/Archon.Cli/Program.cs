@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using Archon.Core.Configuration;
 using Archon.Core.Engine;
@@ -115,14 +116,23 @@ internal static class Program
               --version           Print the version and exit.
 
             Options for check:
-              --format <name>     console (default), json or sarif.
+              --format <name>     console (default), json, sarif or github.
               --fail-on <level>   error (default), warning, information, hint or never.
               --no-baseline       Ignore the baseline file and report every finding.
+              --include-baselined With --format sarif, also emit baselined findings as suppressed
+                                   results, for a viewer that honours SARIF suppressions.
               --output <file>     Write the report to a file instead of standard output.
+              --since <ref>       Report only findings on lines changed since the merge base
+                                   with <ref>, e.g. origin/main. Needs a git repository.
+              --fix               Apply every fix the rules offer, then report what remains.
 
             Options for format:
               --check             Report which files would change, without writing anything.
                                    Exits 3 if any would, 0 if none would.
+
+            Options for baseline:
+              --prune             Drop entries that no longer match a finding, and accept nothing
+                                   new. Without it, the baseline is rewritten from scratch.
 
             Options for init:
               --force             Overwrite an existing .archon.json.
@@ -175,8 +185,13 @@ internal static class Program
         WorkspaceModel workspace = WorkspaceModel.Discover(options.Path, session.Config.EffectiveExcludes());
         Baseline baseline = options.UseBaseline ? session.Baseline : Baseline.Empty;
 
-        AnalysisResult result = session.Engine.AnalyseWorkspace(workspace, session.Config, baseline);
-        string report = Reporter.Render(result, session.Engine.Registry, session.Config.WorkspaceRoot, options.Format);
+        AnalysisResult? result = AnalyseFixAndNarrow(session, workspace, baseline, options);
+        if (result is null)
+        {
+            return ExitUsage;
+        }
+
+        string report = Reporter.Render(result, session.Engine.Registry, session.Config.WorkspaceRoot, options.Format, options.IncludeBaselined);
 
         if (options.OutputPath is not null)
         {
@@ -195,6 +210,124 @@ internal static class Program
             return ExitClean;
         }
         return result.CountAtLeast(options.FailOn.Value) > 0 ? ExitFindings : ExitClean;
+    }
+
+    /// <summary>
+    /// The analysis a check reports: the workspace pass, with fixes applied and a second pass
+    /// taken under <c>--fix</c>, and narrowed to changed lines under <c>--since</c>. Returns
+    /// <c>null</c> after reporting on standard error when <c>--since</c> cannot be resolved.
+    /// </summary>
+    private static AnalysisResult? AnalyseFixAndNarrow(Session session, WorkspaceModel workspace, Baseline baseline, Options options)
+    {
+        // The change set is resolved before anything is written, because it decides which fixes
+        // may be applied as well as which findings are reported. A --since failure is a usage
+        // error and must not be discovered after files have been rewritten.
+        string? repositoryRoot = null;
+        ChangeSet? changes = null;
+        if (options.Since is not null && !TryResolveChanges(session.Config.WorkspaceRoot, options.Since, out repositoryRoot, out changes))
+        {
+            return null;
+        }
+
+        AnalysisResult result = session.Engine.AnalyseWorkspace(workspace, session.Config, baseline);
+
+        if (options.ApplyFixes)
+        {
+            // Fixes are applied from the first pass and the report comes from a second, so what is
+            // printed describes the files as they now are. A fix that collided with another is left
+            // for the next run rather than guessed at, and the second pass reports it still. Under
+            // --since only findings on changed lines are fixed: a request about this change must
+            // not rewrite files it never touched.
+            Func<Finding, bool> inScope = changes is null
+                ? _ => true
+                : f => changes.Intersects(Fingerprint.ToRelative(f.FilePath, repositoryRoot!), f.Span);
+            (int applied, int files) = ApplyFixes(result, session.Engine.Sources, inScope);
+            Console.Error.WriteLine($"archon: applied {applied} fix(es) in {files} file(s).");
+            if (applied > 0)
+            {
+                result = session.Engine.AnalyseWorkspace(workspace, session.Config, baseline);
+                // The rewritten lines are now part of the working tree's change, so the set is
+                // read again before it filters the second pass.
+                if (changes is not null && !TryResolveChanges(session.Config.WorkspaceRoot, options.Since!, out repositoryRoot, out changes))
+                {
+                    return null;
+                }
+            }
+        }
+
+        // Analysis is not narrowed, only the report: a workspace-scope rule still needs every
+        // file to decide, and this only asks which of its answers land on a changed line.
+        return changes is null ? result : changes.Filter(result, repositoryRoot!, $"changed lines since {options.Since}");
+    }
+
+    /// <summary>
+    /// Resolves the lines changed since a ref's merge base, reporting on standard error why it
+    /// could not: the path is not in a git repository, or the ref does not resolve.
+    /// </summary>
+    private static bool TryResolveChanges(string workspaceRoot, string since, out string? repositoryRoot, out ChangeSet? changes)
+    {
+        changes = null;
+        repositoryRoot = GitHistory.FindRepositoryRoot(workspaceRoot);
+        if (repositoryRoot is null)
+        {
+            Console.Error.WriteLine($"archon: --since needs a git repository, and '{workspaceRoot}' is not inside one.");
+            return false;
+        }
+        changes = ChangeSet.Since(repositoryRoot, since, out string? changeError);
+        if (changes is null)
+        {
+            Console.Error.WriteLine($"archon: {changeError}");
+            return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Writes every fix the findings carry back to disk, one pass per file, and drops each changed
+    /// file from the parse cache so a re-analysis reads what was written. Baselined findings are
+    /// fixed too: accepting a finding for now is not a reason to keep it once the fix is free.
+    /// Only findings <paramref name="inScope"/> admits are fixed.
+    /// </summary>
+    private static (int Applied, int Files) ApplyFixes(AnalysisResult result, SourceCache sources, Func<Finding, bool> inScope)
+    {
+        int applied = 0;
+        int files = 0;
+        IEnumerable<IGrouping<string, Finding>> byFile = result.Findings
+            .Concat(result.BaselinedFindings)
+            .Where(f => f.Fix is not null && inScope(f))
+            .GroupBy(f => f.FilePath, StringComparer.OrdinalIgnoreCase);
+
+        foreach (IGrouping<string, Finding> group in byFile)
+        {
+            string? text = sources.GetText(group.Key);
+            if (text is null)
+            {
+                continue;
+            }
+            FixApplier.Outcome outcome = FixApplier.Apply(text, group.Select(f => f.Fix!));
+            if (outcome.Applied == 0)
+            {
+                continue;
+            }
+            File.WriteAllText(group.Key, outcome.Text, EncodingOf(group.Key));
+            sources.Invalidate(group.Key);
+            applied += outcome.Applied;
+            files++;
+        }
+        return (applied, files);
+    }
+
+    /// <summary>
+    /// The encoding a file's byte-order mark declares, so a rewrite goes back the way it came:
+    /// UTF-8 with its mark kept, or UTF-16 as SQL Server's tools save it. Without a mark the file
+    /// is read as UTF-8 and written as UTF-8 with no mark, which is how it was found.
+    /// </summary>
+    private static Encoding EncodingOf(string path)
+    {
+        using FileStream stream = File.OpenRead(path);
+        using var reader = new StreamReader(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false), detectEncodingFromByteOrderMarks: true);
+        reader.Peek();
+        return reader.CurrentEncoding;
     }
 
     /// <summary>
@@ -267,7 +400,7 @@ internal static class Program
             }
             else
             {
-                File.WriteAllText(file, formatted);
+                File.WriteAllText(file, formatted, EncodingOf(file));
             }
             changed++;
         }
@@ -355,6 +488,27 @@ internal static class Program
         Session session = Session.Create(options.Path);
 
         WorkspaceModel workspace = WorkspaceModel.Discover(options.Path, session.Config.EffectiveExcludes());
+
+        if (options.Prune)
+        {
+            // Pruning keeps what still matches and drops what does not; it never accepts anything
+            // new, so a baseline can be tidied on any branch without also waving through the
+            // findings that branch introduced. Entries the run could not judge are left alone.
+            AnalysisResult pruned = session.Engine.AnalyseWorkspace(workspace, session.Config, session.Baseline);
+            IReadOnlyList<BaselineEntry> remaining = session.Baseline.Without(pruned.StaleBaselineEntries);
+            if (pruned.StaleBaselineEntries.Count > 0)
+            {
+                Baseline.Save(session.BaselinePath, remaining);
+            }
+            Console.WriteLine($"Pruned {pruned.StaleBaselineEntries.Count} stale entrie(s) from {session.BaselinePath}; {remaining.Count} remain.");
+            if (pruned.Findings.Count > 0)
+            {
+                Console.WriteLine($"{pruned.Findings.Count} finding(s) are not in the baseline; run 'archon baseline' to accept them.");
+            }
+            ReportMessages(session);
+            return ExitClean;
+        }
+
         AnalysisResult result = session.Engine.AnalyseWorkspace(workspace, session.Config, Baseline.Empty);
 
         Baseline.Save(session.BaselinePath, result.Findings, session.Config.WorkspaceRoot);
@@ -923,10 +1077,22 @@ internal static class Program
 
         public bool UseBaseline { get; private init; } = true;
 
+        /// <summary>Emit baselined findings in a SARIF report too, as suppressed results.</summary>
+        public bool IncludeBaselined { get; private init; }
+
         public string? OutputPath { get; private init; }
 
         /// <summary>Permits <c>init</c> to overwrite a configuration file that is already there.</summary>
         public bool Force { get; private init; }
+
+        /// <summary>A git ref; when set, only findings on lines changed since its merge base are reported.</summary>
+        public string? Since { get; private init; }
+
+        /// <summary>Apply every fix the rules offer, then report what remains.</summary>
+        public bool ApplyFixes { get; private init; }
+
+        /// <summary>Drop baseline entries that no longer match instead of re-recording everything.</summary>
+        public bool Prune { get; private init; }
 
         public static Options Parse(string[] args)
         {
@@ -945,11 +1111,23 @@ internal static class Program
                     case "--no-baseline":
                         options = options with { UseBaseline = false };
                         break;
+                    case "--include-baselined":
+                        options = options with { IncludeBaselined = true };
+                        break;
                     case "--force":
                         options = options with { Force = true };
                         break;
                     case "--output":
                         options = options with { OutputPath = Next(args, ref i, "--output") };
+                        break;
+                    case "--since":
+                        options = options with { Since = Next(args, ref i, "--since") };
+                        break;
+                    case "--fix":
+                        options = options with { ApplyFixes = true };
+                        break;
+                    case "--prune":
+                        options = options with { Prune = true };
                         break;
                     default:
                         if (argument.StartsWith('-'))
@@ -977,6 +1155,7 @@ internal static class Program
             "console" or "text" => ReportFormat.Console,
             "json" => ReportFormat.Json,
             "sarif" => ReportFormat.Sarif,
+            "github" => ReportFormat.GitHub,
             _ => throw new ArgumentException($"unknown format '{value}'.")
         };
 

@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.5.0
+
+The first release where the extension and the command line carry the same version number. The
+host inside this package is the engine described below; `archon --version` prints the same figure.
+
+- Quick fixes come from the engine. A finding whose rule is certain of the rewrite now carries it,
+  and the editor applies that rather than re-deriving one from the diagnostic's message text. The
+  same fix is what `archon check --fix` applies, so the two cannot disagree. Fixes are offered for
+  `AR0014`, `AR0015`, `AR0020`, `AR0022`, `AR0090` and — new to the editor — `SQ0021` in SQL files.
+- The workspace pass logs how many baseline entries no longer match anything, so a baseline that
+  has outlived its findings is noticed; `archon baseline --prune` drops them.
+- Fewer false positives: `AR0070` no longer flags an unused parameter on a public method of a type
+  that lists an interface, and `AR0075` no longer flags public fields on a private nested class.
+- `.archon.json` may carry `overrides`: blocks of rule severities and options applied only to files
+  matching their globs. The host resolves each finding's severity against its own path, so a rule
+  switched off for `tests/**` is silent there and reported everywhere else.
+- File-scope rules run one file at a time across cores rather than one rule at a time, so a
+  workspace pass is no longer paced by its slowest rule. A rule that fails on one file is
+  reported once, naming the file, and still reports on every other.
+- Command line: `archon check --since <ref>` reports only findings on lines changed since the
+  merge base with a ref; `--format github` writes workflow-command annotations for a pull
+  request; `--fix` applies every carried fix in the file's own encoding.
+
+Versions 0.2.2 through 0.4.4 shipped without entries here.
+
 ## 0.2.1
 
 - Documents writing your own rules. `rulePacks` was mentioned in passing and nowhere explained, so

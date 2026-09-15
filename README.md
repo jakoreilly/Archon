@@ -28,7 +28,11 @@ A rule is only worth writing if someone leaves it switched on. Three things deci
 three are properties of the system rather than of any individual rule:
 
 - **One process, one parse.** Every rule shares a single parse of each file, held warm between
-  requests. Adding the fortieth rule costs almost nothing, so rules can be added freely.
+  requests. Adding the fortieth rule costs almost nothing, so rules can be added freely. Work is
+  spread over cores one (rule, file) pair at a time, grouped by file so the core that parsed a
+  file runs every rule over it while the tree is still in cache: on a synthetic 600-file, 110,000-
+  line workspace with every rule on, a full pass took 6.9 s against 8.2 s for the earlier
+  one-task-per-rule engine, and a single heavy rule alone runs in roughly two-thirds the time.
 - **One place to configure, suppress and accept.** A rule id means the same thing in the editor,
   on the command line and in a suppression comment. Rules contain detection logic only: they never
   read settings, never look for an ignore comment and never choose a severity.
@@ -58,7 +62,9 @@ dotnet tests/Archon.Tests/bin/Debug/net10.0/archon-tests.dll
 dotnet src/Archon.Cli/bin/Debug/net10.0/archon.dll check tests/fixtures/sample
 ```
 
-The extension's own parsers are tested separately, without VS Code, by `npm test` in
+The same groups run one per test under `dotnet test`, for an IDE's test explorer or a runner
+that wants TRX output; the two entry points read one list, and a group written but not listed
+fails both. The extension's own parsers are tested separately, without VS Code, by `npm test` in
 `vscode/archon-vscode`.
 
 `archon init` writes a starter `.archon.json` at the root of the repository you want to analyse,
@@ -69,6 +75,12 @@ which stays silent until layers are declared.
 The house style is described by `.editorconfig` and enforced by the build, so `dotnet format
 Archon.slnx` is the fix for any style failure. Only the mechanical rules — formatting and naming —
 can fail a build; anything needing judgement is a suggestion an editor shows and no build reads.
+
+Archon runs on itself. [`.archon.json`](.archon.json) at the root configures it, the accepted debt
+is in `.archon-baseline.json`, and [the CI workflow](.github/workflows/ci.yml) fails on any new
+warning, uploads a SARIF log, annotates pull requests with findings on changed lines, and fails once
+any baselined finding has been accepted for over a year. `archon check .` should print no findings
+on a clean checkout; if a change makes it print one, that is the review comment.
 
 ## The command line
 
@@ -86,8 +98,9 @@ archon trend [path]        Show baseline finding counts over the baseline file's
 archon --version           Print the version.
 ```
 
-`check` takes `--format console|json|sarif`, `--fail-on error|warning|information|hint|never`,
-`--no-baseline` and `--output <file>`. `format` takes `--check`, which reports which files would
+`check` takes `--format console|json|sarif|github`, `--fail-on error|warning|information|hint|never`,
+`--no-baseline`, `--include-baselined`, `--output <file>`, `--since <ref>` and `--fix`. `baseline` takes `--prune`, which
+drops entries that no longer match instead of re-recording everything. `format` takes `--check`, which reports which files would
 change without writing them and exits `3` if any would — the same contract the standalone
 `sqlfmt-tsql` tool this was folded in from uses, so a CI step written against that tool needs no
 change to run against `archon format --check` instead. `init` takes `--force`, and `schema` takes
@@ -118,6 +131,49 @@ when the command could not run. A pipeline step is usually:
 archon check . --format sarif --output archon.sarif --fail-on error
 ```
 
+The SARIF log holds the findings `--fail-on` judged and nothing else, so a code-scanning consumer
+shows the same picture the exit code gave. GitHub Code Scanning in particular ignores SARIF
+`suppressions`, and would raise every baselined finding as an open alert if they were in the log.
+`--include-baselined` adds them anyway, each marked `baselineState: unchanged` with an external
+suppression naming the baseline, for a viewer that honours suppressions and tracks accepted debt
+across uploads. Each built-in rule links back to the table under [Rules](#rules).
+
+### Checking only what a branch changed
+
+```
+archon check . --since origin/main --format github
+```
+
+A whole-repository report is the right thing to gate a build on, and the wrong thing to put in
+front of someone reviewing a pull request, because most of it is about code they did not write.
+`--since <ref>` keeps only the findings whose span touches a line added or changed since the merge
+base with `<ref>` — what this branch did, not everything that landed on the base since it was cut.
+Uncommitted edits and untracked files count as changed, so the same command answers "what did I
+just introduce?" at a terminal. Analysis itself is not narrowed: a workspace-scope rule still sees
+every file, and only its report is filtered, so the `--fail-on` decision is about the change alone
+while the rules still had the whole picture to decide with.
+
+`--format github` writes one workflow command per finding, which the Actions runner turns into an
+annotation on the file and line — shown inline on the pull request's diff when the line is part of
+the change. No upload step, no token. The two together are the review-time complement to the SARIF
+gate above, and [the workflow this repository runs on itself](.github/workflows/ci.yml) uses both.
+
+### Applying fixes
+
+```
+archon check . --fix
+```
+
+A rule that is certain of the rewrite carries it on the finding: `AR0020` (`Count() > 0` →
+`Any()`), `AR0022` (dropping the `.ToList()` copy), `AR0090` (`ToUpper()` → `ToUpperInvariant()`),
+`AR0014` (`throw ex;` → `throw;`), `AR0015` (`Thread.Sleep(n);` → `await Task.Delay(n);`, where
+the call is a statement of the async method itself and not inside a lambda, local function or
+`lock`) and `SQ0021` (`= NULL` → `IS NULL`). `--fix` applies every one,
+then analyses again and reports what remains, so the report describes the files as they now are.
+Two fixes wanting the same characters are not merged: the first in document order is applied and
+the other waits for the next run. The same fix is what the editor offers as a quick fix and what the
+JSON and SARIF reports carry, because it is decided once, in the rule, not re-derived per surface.
+
 ## The editor extension
 
 ```
@@ -126,7 +182,7 @@ npm install
 npm run publish-host
 npm run compile
 npx @vscode/vsce package
-code --install-extension archon-analysis-0.2.4.vsix
+code --install-extension archon-analysis-0.5.0.vsix
 ```
 
 The packaged `.vsix` carries its own published host, so installing it needs only the .NET runtime.
@@ -200,6 +256,9 @@ with no explanation reads as a fault rather than as "nothing changed here".
     "deny": [{ "id": "domain-stays-pure", "from": "Domain", "to": "Infrastructure" }]
   },
   "rulePacks": [],
+  "overrides": [
+    { "files": ["tests/**"], "rules": { "AR0073": "off", "AR0061": "off" } }
+  ],
   "baseline": ".archon-baseline.json"
 }
 ```
@@ -207,6 +266,28 @@ with no explanation reads as a fault rather than as "nothing changed here".
 A key in `rules` is either a rule id or a category name, so a whole family can be set at once; an
 explicit id always wins over its category. Severities are `error`, `warning`, `information`,
 `hint` and `off`.
+
+### Settings for part of a tree
+
+A test project legitimately writes to the console and repeats string literals; a generated folder
+should not be held to a complexity threshold; a payments module might want `AR0054` at `error`
+where the rest of the codebase has it at `warning`. `overrides` is a list of blocks, each naming
+the files it applies to and carrying its own `rules` and `options`, layered over the top-level ones
+for matching files only. Without it the choices were to switch a rule off everywhere or to exclude
+the files from every rule, and both throw away findings that were wanted.
+
+Resolution for a finding is: a session override made in the editor; then each matching block from
+last to first, its rule-id entry before its category entry; then the top-level `rules` the same
+way; then the rule's default. A block's category entry therefore beats a top-level rule id — the
+block is the more specific statement, having named the files. A rule off at the top level but on
+in one block still runs, for that block's files. A block's `options` entry replaces the top-level
+one whole for the rule named, rather than merging into it, so what a rule reads is always
+something someone wrote.
+
+A file-scope rule is told which of its ids are on for the file in hand, so a block that switches
+a costly check off for a folder saves the work as well as the report. This repository's own
+[`.archon.json`](.archon.json) is the worked example: the command-line project and the tests may
+write to the console, and the tests are not held to the complexity or duplication rules.
 
 ### When configuration says something Archon cannot act on
 
@@ -265,6 +346,14 @@ Records every current finding in `.archon-baseline.json`. Those findings are sti
 counted separately, but no longer fail a check — only new ones do. Entries are matched on a
 fingerprint that excludes line numbers, so editing elsewhere in a file does not resurrect an
 accepted finding as a new one.
+
+An entry outlives its finding once the code is fixed, and `check` counts those: `3 baseline
+entrie(s) no longer match anything`. `archon baseline --prune` drops them and accepts nothing new,
+so it is safe to run on any branch; a plain `archon baseline` rewrites the file from scratch and
+would accept whatever that branch introduced. An entry is only judged stale when the run could have
+reproduced it — its rule ran, over its file — so a check of one folder leaves entries for the rest
+of the tree alone, as does a rule that is switched off or that failed. An entry naming a file that
+no longer exists is stale whatever ran.
 
 ## Rules
 
@@ -353,8 +442,12 @@ Rules are written to be silent rather than speculative where this matters:
   task-returning method not named for an asynchronous operation is not seen.
 - `AR0030` words every finding as a possibility, because a key can legitimately come from an
   environment variable or a secret store.
+- `AR0070` cannot see an interface's members without symbols, so a public instance method on a
+  type whose base list names an interface (by the `IName` convention) is left alone, as an
+  `override` or explicit implementation already is: the parameter may not be the method's to drop.
 - `AR0075` only checks `class` declarations; a `struct`'s public fields are left alone, since a value
-  type commonly exposes them by design.
+  type commonly exposes them by design, and so is a class nested privately in another, whose fields
+  only the enclosing type can reach.
 - `AR0090` only recognises a receiver declared (or literally) `string`, the same limitation `AR0021`
   carries; a property chain or a `var`-declared receiver is not seen.
 - `SQ0020` exempts a `DELETE` whose target table is named `#...`, since clearing a whole staging
@@ -370,6 +463,13 @@ A rule that detects several materially different problems should declare a descr
 they can be configured and switched off independently rather than sharing one severity.
 
 Rules must be stateless and safe to call concurrently, and must only report ids they declared.
+
+A rule that is certain of the rewrite sets `Fix` on the finding — a title and a list of `TextEdit`
+regions — and every surface applies it without further thought: the editor as a quick fix, the
+command line under `--fix`, the JSON and SARIF reports as data. The engine is syntax-only, so offer
+one only where what the rule matched already guarantees the edit is safe, and withhold it
+otherwise: a finding without a fix is a finding, a finding with a wrong fix is a bug report.
+`ParsedCSharp.SpanOf` turns a Roslyn span into the line-and-column region the edit needs.
 
 ### Rules outside this repository
 
@@ -431,8 +531,11 @@ output, which makes it drivable by hand while diagnosing it:
 ```
 
 Methods are `initialize`, `listRules`, `analyzeFile` (optionally with in-memory `text`),
-`analyzeWorkspace`, `methodImpact`, `setSeverity`, `invalidate`, `reloadConfig`, `writeBaseline` and
-`shutdown`. Replies are `{"id":n,"ok":true,"result":{...}}` or `{"id":n,"ok":false,"error":"..."}`.
+`analyzeWorkspace`, `formatFile`, `methodImpact`, `methodTrace`, `setSeverity`, `invalidate`,
+`reloadConfig`, `writeBaseline` and `shutdown`. Replies are `{"id":n,"ok":true,"result":{...}}` or
+`{"id":n,"ok":false,"error":"..."}`. A finding whose rule offers a rewrite carries it as `fix`:
+`{"title":"...","edits":[{"startLine","startColumn","endLine","endColumn","newText"}]}`, zero-based,
+the same shape the JSON report uses.
 
 Git is not part of this protocol. Blame and diff are read by the extension directly, because they
 need no parse, no configuration and no warm state — putting them here would only add a hop.
@@ -440,13 +543,6 @@ need no parse, no configuration and no warm state — putting them here would on
 Requests are handled one at a time in arrival order and every request gets a reply. A client that
 does not want to queue work it no longer needs waits for the previous reply before sending the
 next request.
-
-## Explanations
-
-`IFindingExplainer` is an optional seam for prose about a finding that has already been detected.
-The default implementation explains nothing and requires no configuration. Detection never
-consults it, so results stay reproducible and identical offline; an explainer only ever adds
-commentary to a finding produced without it.
 
 ---
 

@@ -21,6 +21,21 @@ public readonly record struct SourceSpan(int StartLine, int StartColumn, int End
     public static readonly SourceSpan None = new(0, 0, 0, 0);
 }
 
+/// <summary>One replacement of a source region by new text. An empty region inserts; empty text deletes.</summary>
+public sealed record TextEdit(SourceSpan Span, string NewText);
+
+/// <summary>
+/// A rewrite a rule is certain of, carried on the finding so that every surface can apply it: the
+/// editor as a quick fix, the command line under <c>--fix</c>, a SARIF consumer from the log.
+/// The engine is syntax-only, so a rule offers one only where its own detection already guarantees
+/// the rewrite is safe, and withholds it otherwise rather than guessing.
+/// </summary>
+public sealed record FindingFix(string Title, IReadOnlyList<TextEdit> Edits)
+{
+    public static FindingFix Replace(string title, SourceSpan span, string newText) =>
+        new(title, new[] { new TextEdit(span, newText) });
+}
+
 /// <summary>
 /// A single rule result. <see cref="Severity"/> is the effective level after configuration
 /// overrides have been applied, not the rule's declared default.
@@ -42,8 +57,8 @@ public sealed record Finding
     /// <summary>Optional machine-readable sub-classification, surfaced in JSON and SARIF only.</summary>
     public string? Kind { get; init; }
 
-    /// <summary>Populated on demand by an explainer; never produced by a rule itself.</summary>
-    public string? Explanation { get; init; }
+    /// <summary>A rewrite the rule is certain resolves this finding, or <c>null</c> when it offers none.</summary>
+    public FindingFix? Fix { get; init; }
 
     /// <summary>Line-independent identity used for baseline matching. Set by the engine.</summary>
     public string Fingerprint { get; init; } = "";

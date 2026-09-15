@@ -114,27 +114,34 @@ public sealed class PerfHintRule : IRule
             {
                 continue;
             }
-            if (!IsCountComparison(binary, out bool isEmptinessCheck))
+            if (!IsCountComparison(binary, out bool isEmptinessCheck, out ExpressionSyntax? receiver) || receiver is null)
             {
                 continue;
             }
-            yield return Create(CountInsteadOfAny, parsed, binary.Span, filePath, "CountInsteadOfAny",
+            // The rewrite is the receiver's own text with the call swapped, so nothing about the
+            // receiver has to be understood for it to be right.
+            string replacement = $"{(isEmptinessCheck ? "!" : "")}{receiver}.Any()";
+            Finding finding = Create(CountInsteadOfAny, parsed, binary.Span, filePath, "CountInsteadOfAny",
                 isEmptinessCheck
                     ? "Prefer '!sequence.Any()' to counting every element to learn that there are none."
                     : "Prefer 'sequence.Any()' to counting every element to learn that there is at least one.");
+            yield return finding with { Fix = FindingFix.Replace($"Replace with '{replacement}'", parsed.SpanOf(binary.Span), replacement) };
         }
     }
 
     /// <summary>
     /// Matches a comparison of <c>Count()</c> against zero or one that is really an emptiness test.
     /// Only the invocation form is matched, so a <c>Count</c> property on a collection that already
-    /// knows its size is never reported.
+    /// knows its size is never reported. With the literal on the left only the symmetric operators
+    /// are considered: <c>1 >= x.Count()</c> asks whether there is at most one, not at least one.
     /// </summary>
-    private static bool IsCountComparison(BinaryExpressionSyntax binary, out bool isEmptinessCheck)
+    private static bool IsCountComparison(BinaryExpressionSyntax binary, out bool isEmptinessCheck, out ExpressionSyntax? receiver)
     {
         isEmptinessCheck = false;
+        receiver = null;
 
-        (ExpressionSyntax candidate, ExpressionSyntax other) = binary.Left is LiteralExpressionSyntax
+        bool literalOnLeft = binary.Left is LiteralExpressionSyntax;
+        (ExpressionSyntax candidate, ExpressionSyntax other) = literalOnLeft
             ? (binary.Right, binary.Left)
             : (binary.Left, binary.Right);
 
@@ -152,10 +159,11 @@ public sealed class PerfHintRule : IRule
 
         bool zero = value == 0;
         isEmptinessCheck = binary.IsKind(SyntaxKind.EqualsExpression) && zero;
-        bool nonEmpty = (binary.IsKind(SyntaxKind.GreaterThanExpression) && zero)
-            || (binary.IsKind(SyntaxKind.GreaterThanOrEqualExpression) && value == 1)
+        bool nonEmpty = (!literalOnLeft && binary.IsKind(SyntaxKind.GreaterThanExpression) && zero)
+            || (!literalOnLeft && binary.IsKind(SyntaxKind.GreaterThanOrEqualExpression) && value == 1)
             || (binary.IsKind(SyntaxKind.NotEqualsExpression) && zero);
 
+        receiver = member.Expression;
         return isEmptinessCheck || nonEmpty;
     }
 
@@ -209,9 +217,12 @@ public sealed class PerfHintRule : IRule
             {
                 continue;
             }
-            yield return Create(RedundantMaterialisation, parsed, outer.Span, filePath, "RedundantMaterialisation",
+            // Dropping the copy is replacing 'x.ToList()' with 'x': the inner invocation's span
+            // with its own receiver's text.
+            Finding finding = Create(RedundantMaterialisation, parsed, outer.Span, filePath, "RedundantMaterialisation",
                 $"'.{materialiser}()' copies the sequence and '.{outerMember.Name.Identifier.Text}(...)' then walks the copy. " +
                 "Drop the copy unless it is a deliberate snapshot.");
+            yield return finding with { Fix = FindingFix.Replace($"Remove '.{materialiser}()'", parsed.SpanOf(inner.Span), innerMember.Expression.ToString()) };
         }
     }
 

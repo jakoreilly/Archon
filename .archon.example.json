@@ -36,6 +36,28 @@
     ]
   },
   "rulePacks": [],
+  "overrides": [
+    {
+      "files": ["tests/**", "**/*Tests.cs"],
+      "rules": {
+        "AR0073": "off",
+        "AR0061": "off",
+        "AR0060": "off"
+      }
+    },
+    {
+      "files": ["src/MyApp.Payments/**"],
+      "rules": {
+        "AR0054": "error",
+        "security": "error"
+      },
+      "options": {
+        "AR0060": {
+          "threshold": 10
+        }
+      }
+    }
+  ],
   "baseline": ".archon-baseline.json",
   "options": {
     "SQ0010": {

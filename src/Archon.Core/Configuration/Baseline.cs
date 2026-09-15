@@ -79,16 +79,22 @@ public sealed class Baseline
         return new Baseline(entries ?? new List<BaselineEntry>());
     }
 
-    public static void Save(string path, IEnumerable<Finding> findings, string workspaceRoot)
+    public static void Save(string path, IEnumerable<Finding> findings, string workspaceRoot) =>
+        Save(path, findings.Select(f => new BaselineEntry
+        {
+            Fingerprint = f.Fingerprint,
+            RuleId = f.RuleId,
+            File = Fingerprint.ToRelative(f.FilePath, workspaceRoot).Replace('\\', '/'),
+            Message = f.Message
+        }));
+
+    /// <summary>
+    /// Writes entries in a fixed order, so that a baseline diff shows only what was accepted or
+    /// dropped and never a reshuffle.
+    /// </summary>
+    public static void Save(string path, IEnumerable<BaselineEntry> entries)
     {
-        var entries = findings
-            .Select(f => new BaselineEntry
-            {
-                Fingerprint = f.Fingerprint,
-                RuleId = f.RuleId,
-                File = Fingerprint.ToRelative(f.FilePath, workspaceRoot).Replace('\\', '/'),
-                Message = f.Message
-            })
+        var ordered = entries
             .OrderBy(e => e.File, StringComparer.Ordinal)
             .ThenBy(e => e.RuleId, StringComparer.Ordinal)
             .ThenBy(e => e.Fingerprint, StringComparer.Ordinal)
@@ -99,6 +105,13 @@ public sealed class Baseline
         {
             Directory.CreateDirectory(directory);
         }
-        File.WriteAllText(path, JsonSerializer.Serialize(entries, Options));
+        File.WriteAllText(path, JsonSerializer.Serialize(ordered, Options));
+    }
+
+    /// <summary>The entries left after removing the given ones, matched by fingerprint.</summary>
+    public IReadOnlyList<BaselineEntry> Without(IEnumerable<BaselineEntry> removed)
+    {
+        var fingerprints = removed.Select(e => e.Fingerprint).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return Entries.Where(e => !fingerprints.Contains(e.Fingerprint)).ToList();
     }
 }

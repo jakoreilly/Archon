@@ -89,6 +89,33 @@ public static class GitHistory
     public static string? ShowFileAt(string repositoryRoot, string commitHash, string relativePath) =>
         Run(repositoryRoot, "show", $"{commitHash}:{relativePath}");
 
+    /// <summary>
+    /// The commit where HEAD's history and <paramref name="reference"/>'s last coincide, or null
+    /// when the ref does not resolve or the two share nothing.
+    /// </summary>
+    public static string? MergeBase(string repositoryRoot, string reference)
+    {
+        string? output = Run(repositoryRoot, "merge-base", reference, "HEAD");
+        return string.IsNullOrWhiteSpace(output) ? null : output.Trim();
+    }
+
+    /// <summary>
+    /// The working tree's differences from a commit as a unified diff with no context lines, so
+    /// every hunk header describes exactly the lines that changed and nothing around them. Renames
+    /// are detected so a moved file's untouched lines are not all reported as new.
+    /// </summary>
+    public static string? DiffSince(string repositoryRoot, string commitHash) =>
+        Run(repositoryRoot, "diff", "--unified=0", "--no-color", "--no-ext-diff", "--find-renames", commitHash, "--");
+
+    /// <summary>Files git knows nothing about yet, relative to the root with forward slashes.</summary>
+    public static IReadOnlyList<string> UntrackedFiles(string repositoryRoot)
+    {
+        string? output = Run(repositoryRoot, "ls-files", "--others", "--exclude-standard");
+        return output is null
+            ? Array.Empty<string>()
+            : output.Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(l => l.Trim()).ToList();
+    }
+
     /// <summary>How many commits touched one file since a point in time. Zero when git is
     /// unavailable, so a caller combining this with other signals need not special-case it.</summary>
     public static int CommitCountSince(string repositoryRoot, string relativePath, DateTimeOffset since)
