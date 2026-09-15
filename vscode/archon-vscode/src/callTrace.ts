@@ -292,6 +292,11 @@ ${ambiguousNote}
     return { width: svgEl.width.baseVal.value, height: svgEl.height.baseVal.value };
   }
 
+  // A diagram wide enough that fitting the whole thing on screen would shrink it past
+  // legibility is better left larger and panned/scrolled than shrunk to fit — this is the
+  // floor auto-fit will not go below, distinct from the 5% floor manual zoom-out still allows.
+  var MIN_FIT_SCALE = 0.35;
+
   function fitToViewport() {
     if (!svgEl) {
       return;
@@ -299,7 +304,8 @@ ${ambiguousNote}
     const size = svgSize();
     const vw = viewport.clientWidth - 24;
     const vh = viewport.clientHeight - 24;
-    scale = clampScale(Math.min(1, vw / size.width, vh / size.height));
+    const ideal = Math.min(1, vw / size.width, vh / size.height);
+    scale = clampScale(Math.max(MIN_FIT_SCALE, ideal));
     panX = Math.max(12, (viewport.clientWidth - size.width * scale) / 2);
     panY = 12;
     applyTransform();
